@@ -1,0 +1,32 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(\"C:/Espressif/tools/xtensa-esp-elf/esp-14.2.0_20260121/xtensa-esp-elf/bin/xtensa-esp-elf-gcc.exe\" -E -x c++ - -v)",
+      "Read(//c/Espressif/tools/xtensa-esp-elf/esp-14.2.0_20260121/xtensa-esp-elf/xtensa-esp-elf/include/sys/**)",
+      "Read(//c/Espressif/tools/xtensa-esp-elf/esp-14.2.0_20260121/xtensa-esp-elf/lib/gcc/xtensa-esp-elf/14.2.0/include-fixed/**)",
+      "Bash(idf.py --version)",
+      "Bash(\"C:/Users/Administrator/.espressif/python_env/idf5.5_py3.11_env/Scripts/python.exe\" -m pip install rich)",
+      "Bash(\"C:/esp/v5.5.4/esp-idf/install.bat\")",
+      "Bash(\"C:/Users/Administrator/.espressif/python_env/idf5.5_py3.11_env/Scripts/python.exe\" \"C:/esp/v5.5.4/esp-idf/tools/idf_tools.py\" install-python-dependencies)",
+      "Bash(cmd.exe /c \"cd /d C:\\\\Users\\\\Administrator\\\\Documents\\\\ESP-32-project\\\\xiaozhi-esp32 && C:\\\\esp\\\\v5.5.4\\\\esp-idf\\\\export.bat > nul 2>&1 && idf.py build 2>&1\")",
+      "Bash(cmd.exe /c \"cd /d C:\\\\Users\\\\Administrator\\\\Documents\\\\ESP-32-project\\\\xiaozhi-esp32 && C:\\\\esp\\\\v5.5.4\\\\esp-idf\\\\export.bat > nul 2>&1 && idf.py build 2>&1 > C:\\\\Users\\\\Administrator\\\\Documents\\\\ESP-32-project\\\\xiaozhi-esp32\\\\build_output.txt\")",
+      "Read(//tmp/**)",
+      "Bash(cmd.exe /c \"C:\\\\Windows\\\\Temp\\\\build_medbox.bat\")",
+      "Bash(powershell.exe -Command \"& { C:\\\\esp\\\\v5.5.4\\\\esp-idf\\\\export.ps1 2>&1 | Out-Null; Set-Location 'C:\\\\Users\\\\Administrator\\\\Documents\\\\ESP-32-project\\\\xiaozhi-esp32'; Write-Host '=== STARTING BUILD ==='; idf.py build 2>&1 }\")",
+      "Bash(echo '@echo off')",
+      "Bash(echo 'call C:\\\\esp\\\\v5.5.4\\\\esp-idf\\\\export.bat')",
+      "Bash(echo 'cd /d C:\\\\Users\\\\Administrator\\\\Documents\\\\ESP-32-project\\\\xiaozhi-esp32')",
+      "Bash(echo 'echo ===== BUILD START =====')",
+      "Bash(echo 'idf.py build 2>&1')",
+      "Bash(cmd.exe /c C:\\\\Windows\\\\Temp\\\\build2.bat)",
+      "Bash(echo 'call C:\\\\esp\\\\v5.5.4\\\\esp-idf\\\\export.bat > C:\\\\Windows\\\\Temp\\\\build_log.txt 2>&1')",
+      "Bash(echo 'echo START >> C:\\\\Windows\\\\Temp\\\\build_log.txt')",
+      "Bash(echo 'idf.py build >> C:\\\\Windows\\\\Temp\\\\build_log.txt 2>&1')",
+      "Bash(echo 'echo EXIT: %%ERRORLEVEL%% >> C:\\\\Windows\\\\Temp\\\\build_log.txt')",
+      "Bash(cmd.exe /c C:\\\\Windows\\\\Temp\\\\build3.bat)",
+      "Bash(cmd.exe /c C:\\\\Windows\\\\Temp\\\\build_now.bat)",
+      "Read(//c/esp/v5.5.4/esp-idf/**)",
+      "WebSearch"
+    ]
+  }
+}
