@@ -5,8 +5,13 @@
 #include "button.h"
 #include "config.h"
 #include "led/single_led.h"
+#include "mcp_server.h"
+#include "conversation_logger.h"
+#include "wxpusher_notifier.h"
 
 #include <esp_log.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 #include <esp_lcd_panel_vendor.h>
 #include <esp_lcd_panel_io.h>
 #include <esp_lcd_panel_ops.h>
@@ -54,10 +59,24 @@ static const gc9a01_lcd_init_cmd_t gc9107_lcd_init_cmds[] = {
 
 #define TAG "MedicineBoxPro"
 
+struct PushTaskParams {
+    std::string summary;
+    std::string markdown;
+    WxPusherNotifier* notifier;
+};
+
+static void PushConversationTask(void* arg) {
+    auto* params = (PushTaskParams*)arg;
+    params->notifier->SendMarkdown(params->summary.c_str(), params->markdown.c_str());
+    delete params;
+    vTaskDelete(NULL);
+}
+
 class MedicineBoxProBoard : public WifiBoard {
 private:
     Button boot_button_;
     LcdDisplay* display_;
+    WxPusherNotifier notifier_;
 
     void InitializeSpi() {
         spi_bus_config_t buscfg = {};
@@ -134,6 +153,26 @@ public:
         InitializeSpi();
         InitializeLcdDisplay();
         InitializeButtons();
+
+        // WxPusher 微信推送 MCP 工具注册
+        // 用户扫码关注应用后，无需 UID 即可接收推送
+        // 可选：在 WxPusher App 内绑定 ClawBot iLink → 消息直接进微信聊天界面
+        McpServer::GetInstance().AddTool(
+            "push_conversation",
+            "将当前对话记录推送到家人微信",
+            PropertyList(),
+            [this](const PropertyList& props) -> ReturnValue {
+                auto& logger = ConversationLogger::GetInstance();
+                auto* params = new PushTaskParams{
+                    logger.ToSummary(),
+                    logger.ToMarkdown(),
+                    &notifier_
+                };
+                logger.Clear();
+                xTaskCreate(PushConversationTask, "wxpush", 8192,
+                            params, 5, NULL);
+                return std::string("对话记录已推送到微信");
+            });
 
         if (DISPLAY_BACKLIGHT_PIN != GPIO_NUM_NC) {
             GetBacklight()->RestoreBrightness();
