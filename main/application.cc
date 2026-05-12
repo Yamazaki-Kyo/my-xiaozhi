@@ -1075,6 +1075,14 @@ void Application::SendMcpMessage(const std::string& payload) {
     });
 }
 
+void Application::SendTtsRequest(const std::string& text) {
+    Schedule([this, text = std::move(text)]() {
+        if (protocol_) {
+            protocol_->SendTtsRequest(text);
+        }
+    });
+}
+
 void Application::SetAecMode(AecMode mode) {
     aec_mode_ = mode;
     Schedule([this]() {

@@ -16,18 +16,18 @@ class WxPusherNotifier {
 public:
     WxPusherNotifier() {}
 
-    void SendText(const char* summary, const char* text,
+    bool SendText(const char* summary, const char* text,
                   const char* uid = WXPUSHER_UID) {
-        DoGet(1, summary, text, uid);
+        return DoGet(1, summary, text, uid);
     }
 
-    void SendMarkdown(const char* summary, const char* markdown,
+    bool SendMarkdown(const char* summary, const char* markdown,
                       const char* uid = WXPUSHER_UID) {
-        DoGet(3, summary, markdown, uid);
+        return DoGet(3, summary, markdown, uid);
     }
 
 private:
-    void DoGet(int content_type, const char* summary, const char* content,
+    bool DoGet(int content_type, const char* summary, const char* content,
                const char* uid) {
         std::string enc_summary = UrlEncode(summary);
         std::string enc_content = UrlEncode(content);
@@ -37,7 +37,7 @@ private:
         char* url = (char*)malloc(url_size);
         if (!url) {
             ESP_LOGE(TAG_WXP, "OOM for URL");
-            return;
+            return false;
         }
 
         snprintf(url, url_size,
@@ -60,12 +60,14 @@ private:
         config.buffer_size_tx = 2048;
 
         esp_http_client_handle_t client = esp_http_client_init(&config);
+        bool success = false;
         if (client) {
             esp_err_t err = esp_http_client_perform(client);
             int status = esp_http_client_get_status_code(client);
             if (status == 301 || status == 302 || status == 307 || status == 308) {
                 ESP_LOGW(TAG_WXP, "Redirect to HTTPS, trying POST...");
             }
+            success = (err == ESP_OK && status == 200);
             ESP_LOGI(TAG_WXP, "WxPusher: err=%s HTTP=%d",
                      err == ESP_OK ? "OK" : esp_err_to_name(err), status);
             esp_http_client_cleanup(client);
@@ -74,6 +76,7 @@ private:
         }
 
         free(url);
+        return success;
     }
 
     static std::string UrlEncode(const std::string& src) {

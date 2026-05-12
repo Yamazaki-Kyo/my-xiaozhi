@@ -34,6 +34,12 @@
 #define BUILTIN_LED_GPIO        GPIO_NUM_48
 #define BOOT_BUTTON_GPIO        GPIO_NUM_0
 
+// 180° 舵机 PWM (LEDC 50Hz)
+#define SERVO_PWM_PIN GPIO_NUM_12
+
+// 定时调度器 LED (GPIO3, 高电平亮)
+#define SCHEDULER_LED_GPIO GPIO_NUM_3
+
 // SPI LCD 显示屏 (ST7789 240x320 8Pin)
 #define DISPLAY_MOSI_PIN      GPIO_NUM_20
 #define DISPLAY_CLK_PIN       GPIO_NUM_19

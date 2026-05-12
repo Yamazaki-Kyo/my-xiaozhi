@@ -78,6 +78,21 @@ void Protocol::SendMcpMessage(const std::string& payload) {
     SendText(message);
 }
 
+void Protocol::SendTtsRequest(const std::string& text) {
+    std::string escaped;
+    escaped.reserve(text.size() + 2);
+    for (char c : text) {
+        if (c == '"') escaped += "\\\"";
+        else if (c == '\\') escaped += "\\\\";
+        else if (c == '\n') escaped += "\\n";
+        else if (c == '\r') escaped += "\\r";
+        else if (c == '\t') escaped += "\\t";
+        else escaped += c;
+    }
+    std::string message = "{\"session_id\":\"" + session_id_ + "\",\"type\":\"tts_request\",\"text\":\"" + escaped + "\"}";
+    SendText(message);
+}
+
 bool Protocol::IsTimeout() const {
     const int kTimeoutSeconds = 120;
     auto now = std::chrono::steady_clock::now();

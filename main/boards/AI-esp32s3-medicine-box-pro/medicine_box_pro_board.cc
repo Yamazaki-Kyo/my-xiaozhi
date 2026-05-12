@@ -2,14 +2,21 @@
 #include "codecs/no_audio_codec.h"
 #include "display/lcd_display.h"
 #include "application.h"
+
 #include "button.h"
 #include "config.h"
 #include "led/single_led.h"
 #include "mcp_server.h"
 #include "conversation_logger.h"
 #include "wxpusher_notifier.h"
+#include "servo_controller.h"
+#include "servo_debug_server.h"
+#include "scheduler_server.h"
+#include "medicine_box_display.h"
 
+#include <esp_http_server.h>
 #include <esp_log.h>
+#include <wifi_manager.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <esp_lcd_panel_vendor.h>
@@ -75,8 +82,96 @@ static void PushConversationTask(void* arg) {
 class MedicineBoxProBoard : public WifiBoard {
 private:
     Button boot_button_;
-    LcdDisplay* display_;
+    MedicineBoxDisplay* display_;
     WxPusherNotifier notifier_;
+    MedicineDispenser* dispenser_ = nullptr;
+    ServoDebugServer* servo_debug_server_ = nullptr;
+    SchedulerServer* scheduler_server_ = nullptr;
+    esp_timer_handle_t http_retry_timer_ = nullptr;
+    esp_timer_handle_t ip_poll_timer_ = nullptr;
+    esp_timer_handle_t display_refresh_timer_ = nullptr;
+    int http_retry_count_ = 0;
+    std::string last_push_status_;
+    std::mutex status_mutex_;
+
+    static void HttpServerRetryCallback(void* arg) {
+        auto* self = (MedicineBoxProBoard*)arg;
+        httpd_handle_t http_server = nullptr;
+        httpd_config_t http_cfg = HTTPD_DEFAULT_CONFIG();
+        http_cfg.max_uri_handlers = 16;
+        http_cfg.uri_match_fn = httpd_uri_match_wildcard;
+
+        if (httpd_start(&http_server, &http_cfg) == ESP_OK) {
+            esp_timer_stop(self->http_retry_timer_);
+            ESP_LOGI(TAG, "HTTP 服务器已启动 (重试 %d 次)", self->http_retry_count_);
+
+            self->servo_debug_server_->RegisterHandlers(http_server);
+            self->scheduler_server_->RegisterHttpHandlers(http_server);
+
+            // 在 LCD 屏幕上显示访问网址
+            auto& wifi = WifiManager::GetInstance();
+            std::string ip = wifi.GetIpAddress();
+            if (!ip.empty() && ip != "0.0.0.0") {
+                std::string msg = "定时调度: http://" + ip + "/scheduler\n"
+                                  "舵机调试: http://" + ip + "/servo-debug";
+                self->display_->ShowNotification(msg, 15000);
+                ESP_LOGI(TAG, "舵机调试页面: http://%s/servo-debug", ip.c_str());
+                ESP_LOGI(TAG, "定时调度器页面: http://%s/scheduler", ip.c_str());
+            } else {
+                // DHCP 尚未分配 IP，启动轮询等待
+                esp_timer_create_args_t poll_args = {};
+                poll_args.callback = IpPollCallback;
+                poll_args.arg = self;
+                poll_args.dispatch_method = ESP_TIMER_TASK;
+                poll_args.name = "ip_poll";
+                esp_timer_create(&poll_args, &self->ip_poll_timer_);
+                esp_timer_start_periodic(self->ip_poll_timer_, 2000000);
+                ESP_LOGI(TAG, "HTTP 服务器已就绪，等待 DHCP 分配 IP...");
+            }
+        } else {
+            self->http_retry_count_++;
+            if (self->http_retry_count_ >= 30) {
+                esp_timer_stop(self->http_retry_timer_);
+                ESP_LOGE(TAG, "HTTP 服务器启动失败 (已重试 %d 次)", self->http_retry_count_);
+            }
+        }
+    }
+
+    static void IpPollCallback(void* arg) {
+        auto* self = (MedicineBoxProBoard*)arg;
+        auto& wifi = WifiManager::GetInstance();
+        std::string ip = wifi.GetIpAddress();
+        if (!ip.empty() && ip != "0.0.0.0") {
+            esp_timer_stop(self->ip_poll_timer_);
+            std::string msg = "定时调度: http://" + ip + "/scheduler\n"
+                              "舵机调试: http://" + ip + "/servo-debug";
+            self->display_->ShowNotification(msg, 15000);
+            ESP_LOGI(TAG, "舵机调试页面: http://%s/servo-debug", ip.c_str());
+            ESP_LOGI(TAG, "定时调度器页面: http://%s/scheduler", ip.c_str());
+        }
+    }
+
+    static void DisplayRefreshCallback(void* arg) {
+        auto* self = (MedicineBoxProBoard*)arg;
+        if (!self->display_) return;
+
+        auto& wifi = WifiManager::GetInstance();
+        std::string ip = wifi.GetIpAddress();
+        if (ip.empty() || ip == "0.0.0.0") ip = "无网络";
+        self->display_->SetNetworkInfo(ip);
+
+        std::string status;
+        {
+            std::lock_guard<std::mutex> lock(self->status_mutex_);
+            status = self->last_push_status_;
+        }
+        self->display_->SetPushStatus(status.empty() ? "--" : status);
+
+        if (self->scheduler_server_) {
+            self->display_->SetTimerEvents(
+                self->scheduler_server_->GetEventsSummary());
+        }
+    }
 
     void InitializeSpi() {
         spi_bus_config_t buscfg = {};
@@ -129,11 +224,11 @@ private:
 #ifdef LCD_TYPE_GC9A01_SERIAL
         panel_config.vendor_config = &gc9107_vendor_config;
 #endif
-        display_ = new SpiLcdDisplay(panel_io, panel,
-                                     DISPLAY_WIDTH, DISPLAY_HEIGHT,
-                                     DISPLAY_OFFSET_X, DISPLAY_OFFSET_Y,
-                                     DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y,
-                                     DISPLAY_SWAP_XY);
+        display_ = new MedicineBoxDisplay(panel_io, panel,
+                                          DISPLAY_WIDTH, DISPLAY_HEIGHT,
+                                          DISPLAY_OFFSET_X, DISPLAY_OFFSET_Y,
+                                          DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y,
+                                          DISPLAY_SWAP_XY);
     }
 
     void InitializeButtons() {
@@ -154,19 +249,44 @@ public:
         InitializeLcdDisplay();
         InitializeButtons();
 
-        // WxPusher 微信推送 MCP 工具注册
-        // 用户扫码关注应用后，无需 UID 即可接收推送
-        // 可选：在 WxPusher App 内绑定 ClawBot iLink → 消息直接进微信聊天界面
+        // 舵机初始化 (GPIO12 PWM, 50Hz)
+        dispenser_ = new MedicineDispenser(SERVO_PWM_PIN);
+        dispenser_->Zero();
+        ESP_LOGI(TAG, "舵机已归零 (槽位0/logo), 角度=0°");
+
+        // 舵机调试服务器对象 (稍后网络就绪时注册路由)
+        servo_debug_server_ = new ServoDebugServer(dispenser_);
+
+        // 定时调度器 (核心逻辑独立于 HTTP，稍后网络就绪时注册路由)
+        scheduler_server_ = new SchedulerServer(SCHEDULER_LED_GPIO);
+
+        // 设置事件触发回调：定时任务执行时用小智播报
+        scheduler_server_->SetEventCallback([](const char* msg) {
+            auto& app = Application::GetInstance();
+            std::string text(msg);
+            app.Schedule([text]() {
+                Application::GetInstance().Alert("定时任务", text.c_str(), "bell");
+            });
+            // 请求服务器 TTS 真人语音播报
+            app.SendTtsRequest("定时任务已执行，" + text);
+        });
+
+        // === MCP 工具注册 ===
+        // WxPusher 微信推送
         McpServer::GetInstance().AddTool(
             "push_conversation",
             "将当前对话记录推送到家人微信",
             PropertyList(),
             [this](const PropertyList& props) -> ReturnValue {
                 auto& logger = ConversationLogger::GetInstance();
+                {
+                    std::lock_guard<std::mutex> lock(status_mutex_);
+                    last_push_status_ = "发送中...";
+                }
                 auto* params = new PushTaskParams{
                     logger.ToSummary(),
                     logger.ToMarkdown(),
-                    &notifier_
+                    &notifier_,
                 };
                 logger.Clear();
                 xTaskCreate(PushConversationTask, "wxpush", 8192,
@@ -174,9 +294,89 @@ public:
                 return std::string("对话记录已推送到微信");
             });
 
+        // 语音添加定时任务
+        McpServer::GetInstance().AddTool(
+            "add_schedule",
+            "添加定时任务，在指定日期和时间自动控制LED开关。当用户通过语音说\"设置定时\"、\"定时开灯\"、\"几点关灯\"等时调用此工具。"
+            "如果用户要求每天重复执行(如\"每天\"、\"每天早上\"、\"每天都\")，请设置repeat_type=1。"
+            "如果用户要求每天重复但指定了截止日期(如\"每天执行到5月20日\"、\"每天直到月底\")，请设置repeat_type=2并填写end_month和end_day。"
+            "默认repeat_type=0(单次执行)。"
+            "如果用户指定了具体日期(如\"5月11日\"、\"每月15日\"、\"3月每天\")，请设置month(1-12,0=每月)和day(1-31,0=每天)参数。",
+            PropertyList({
+                Property("hour", kPropertyTypeInteger, 0, 23),
+                Property("minute", kPropertyTypeInteger, 0, 59),
+                Property("action", kPropertyTypeString),
+                Property("repeat_type", kPropertyTypeInteger, 0),
+                Property("month", kPropertyTypeInteger, 0),
+                Property("day", kPropertyTypeInteger, 0),
+                Property("end_month", kPropertyTypeInteger, 0),
+                Property("end_day", kPropertyTypeInteger, 0),
+            }),
+            [this](const PropertyList& props) -> ReturnValue {
+                int hour = props["hour"].value<int>();
+                int minute = props["minute"].value<int>();
+                std::string action_str = props["action"].value<std::string>();
+                int repeat_type = props["repeat_type"].value<int>();
+                int month = props["month"].value<int>();
+                int day = props["day"].value<int>();
+                int end_month = props["end_month"].value<int>();
+                int end_day = props["end_day"].value<int>();
+
+                int action_val;
+                if (action_str == "led_on") {
+                    action_val = 1;
+                } else if (action_str == "led_off") {
+                    action_val = 0;
+                } else {
+                    return std::string("action 参数无效，必须为 led_on 或 led_off");
+                }
+
+                std::string error;
+                bool ok = scheduler_server_->AddEvent(hour, minute, action_val, repeat_type,
+                                                      month, day, end_month, end_day, &error);
+                if (ok) {
+                    const char* rpt_info = repeat_type == 1 ? "(每天)" :
+                                           repeat_type == 2 ? "(每天,有截止)" : "";
+                    char date_info[32] = "";
+                    if (month > 0 && day > 0)
+                        snprintf(date_info, sizeof(date_info), "%d月%d日 ", month, day);
+                    else if (month > 0)
+                        snprintf(date_info, sizeof(date_info), "%d月每天 ", month);
+                    else if (day > 0)
+                        snprintf(date_info, sizeof(date_info), "每月%d日 ", day);
+                    char buf[96];
+                    snprintf(buf, sizeof(buf), "已添加定时任务: %s%02d:%02d %s%s",
+                             date_info, hour, minute, action_val ? "LED亮" : "LED灭", rpt_info);
+                    return std::string(buf);
+                }
+                return std::string("添加失败: " + error);
+            });
+
         if (DISPLAY_BACKLIGHT_PIN != GPIO_NUM_NC) {
             GetBacklight()->RestoreBrightness();
         }
+
+        // 屏幕信息刷新定时器 (每 3 秒更新侧边栏)
+        {
+            esp_timer_create_args_t refresh_args = {};
+            refresh_args.callback = DisplayRefreshCallback;
+            refresh_args.arg = this;
+            refresh_args.dispatch_method = ESP_TIMER_TASK;
+            refresh_args.name = "display_refresh";
+            esp_timer_create(&refresh_args, &display_refresh_timer_);
+            esp_timer_start_periodic(display_refresh_timer_, 5000000);
+        }
+
+        // HTTP 服务器延迟启动：网络协议栈在 StartNetwork() 中初始化，
+        // 而构造函数在 StartNetwork() 之前执行。用定时器重试启动。
+        esp_timer_create_args_t timer_args = {};
+        timer_args.callback = HttpServerRetryCallback;
+        timer_args.arg = this;
+        timer_args.dispatch_method = ESP_TIMER_TASK;
+        timer_args.name = "http_retry";
+        esp_timer_create(&timer_args, &http_retry_timer_);
+        esp_timer_start_periodic(http_retry_timer_, 2000000); // 每 2 秒重试
+        ESP_LOGI(TAG, "HTTP 服务器等待网络就绪...");
     }
 
     virtual Led* GetLed() override {
