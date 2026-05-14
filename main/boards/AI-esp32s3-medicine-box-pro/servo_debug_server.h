@@ -4,105 +4,142 @@
 #include <esp_http_server.h>
 #include <esp_log.h>
 #include <cJSON.h>
+#include <cstdio>
 #include "servo_controller.h"
 
 #define TAG_SDS "ServoDebug"
 
-// 舵机调试网页（内嵌 HTML）
 static const char SERVO_DEBUG_HTML[] = R"rawliteral(
 <!DOCTYPE html>
 <html lang="zh">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>舵机调试 - AI 智能药盒 Pro</title>
+<title>舵机调试 - 360°</title>
 <style>
   * { margin:0; padding:0; box-sizing:border-box; }
   body { font-family: -apple-system, sans-serif; background: #1a1a2e;
          color: #eee; min-height: 100vh; display: flex;
          justify-content: center; align-items: center; }
   .card { background: #16213e; border-radius: 16px; padding: 24px;
-          max-width: 420px; width: 100%; margin: 16px;
+          max-width: 440px; width: 100%; margin: 16px;
           box-shadow: 0 8px 32px rgba(0,0,0,.4); }
-  h2 { text-align: center; margin-bottom: 8px; color: #e94560; }
-  .sub { text-align: center; font-size: 14px; color: #888; margin-bottom: 20px; }
+  h2 { text-align: center; margin-bottom: 4px; color: #e94560; }
+  .sub { text-align: center; font-size: 13px; color: #888; margin-bottom: 12px; }
 
-  .angle-display { text-align: center; margin: 16px 0; }
-  .angle-value { font-size: 64px; font-weight: bold; color: #0f3460;
-                 background: #e94560; display: inline-block; padding: 8px 24px;
-                 border-radius: 12px; min-width: 160px; }
-  .slot-label { font-size: 14px; color: #ccc; margin-top: 4px; }
+  .pwm-display { text-align: center; margin: 8px 0; }
+  .pwm-value { font-size: 48px; font-weight: bold; color: #0f3460;
+               background: #e94560; display: inline-block; padding: 4px 20px;
+               border-radius: 12px; min-width: 130px; }
+  .pwm-label { font-size: 12px; color: #ccc; margin-top: 2px; }
 
-  input[type=range] { width: 100%; height: 40px; -webkit-appearance: none;
-                      background: #0f3460; border-radius: 10px; outline: none; }
-  input[type=range]::-webkit-slider-thumb { -webkit-appearance: none;
-      width: 36px; height: 36px; background: #e94560; border-radius: 50%;
-      cursor: pointer; border: 2px solid #fff; }
+  .dir-indicator { text-align: center; font-size: 20px; margin: 2px 0;
+                   height: 28px; color: #888; }
+  .dir-indicator.cw { color: #4af; }
+  .dir-indicator.ccw { color: #f4a; }
 
-  .btn-row { display: flex; gap: 8px; justify-content: center; margin: 12px 0; flex-wrap: wrap; }
-  button { border: none; border-radius: 10px; padding: 10px 18px; font-size: 15px;
+  .status-bar { display: flex; gap: 8px; justify-content: center; margin: 6px 0; flex-wrap: wrap; }
+  .chip { font-size: 11px; padding: 3px 8px; border-radius: 20px;
+          background: #0f3460; color: #aaa; }
+  .chip.ok { background: #1a4a1a; color: #4f4; }
+  .chip.warn { background: #332200; color: #ffaa00; }
+  .chip.active { background: #1a1a4a; color: #88f; }
+
+  .section { background: #0f3460; border-radius: 10px; padding: 10px; margin: 8px 0; }
+  .section h3 { font-size: 12px; color: #aaa; margin-bottom: 6px; }
+
+  .slider-row { margin: 6px 0; }
+  .slider-row label { font-size: 12px; color: #ccc; display: flex; justify-content: space-between; }
+  .slider-row input[type=range] { width: 100%; margin: 3px 0; }
+
+  .btn-row { display: flex; gap: 6px; justify-content: center; margin: 6px 0; flex-wrap: wrap; }
+  button { border: none; border-radius: 8px; padding: 8px 12px; font-size: 13px;
            cursor: pointer; font-weight: bold; transition: .15s; color: #fff; }
   button:active { transform: scale(.95); }
-  .btn-step { background: #0f3460; }
-  .btn-slot { background: #533483; }
-  .btn-zero { background: #e94560; font-size: 18px; padding: 12px 32px; }
-  .btn-home { background: #0f3460; }
+  .btn-preset { background: #533483; }
+  .btn-preset.cw { background: #1a4a8a; }
+  .btn-preset.ccw { background: #8a1a4a; }
+  .btn-stop { background: #c0392b; font-size: 16px; padding: 10px 40px; }
 
-  .slot-grid { display: grid; grid-template-columns: repeat(4,1fr); gap: 8px; margin: 16px 0; }
-  .status { text-align: center; font-size: 13px; color: #666; margin-top: 12px; }
-  .warning { background: #332200; color: #ffaa00; padding: 10px 14px; border-radius: 8px;
-             font-size: 13px; margin-bottom: 16px; text-align: center; }
+  .home-led { display: inline-block; width: 10px; height: 10px; border-radius: 50%;
+              background: #444; margin-right: 4px; }
+  .home-led.on { background: #4f4; box-shadow: 0 0 8px #4f4; }
+
+  .msg { text-align: center; font-size: 12px; color: #666; margin-top: 6px; min-height: 16px; }
 </style>
 </head>
 <body>
 <div class="card">
-  <h2>舵机校准调试</h2>
-  <div class="sub">安装舵机前先将角度归零</div>
+  <h2>舵机调试</h2>
+  <div class="sub">360° 连续旋转舵机</div>
 
-  <div class="warning">
-    <strong>安装步骤</strong><br>
-    1. 点"归零"使舵机转到 0<br>
-    2. 将转盘槽位 0（logo 面）对准取药口装入<br>
-    3. 用槽位按钮验证各槽位对准情况
+  <div class="pwm-display">
+    <div class="pwm-value" id="pwmText">1500</div>
+    <div class="pwm-label">PWM 脉宽 (μs) · 停止中心=<span id="centerText">1500</span>μs</div>
   </div>
 
-  <div class="angle-display">
-    <div class="angle-value" id="angleText">--</div>
-    <div class="slot-label">角度 / 槽位 <span id="slotText">--</span></div>
+  <div class="dir-indicator" id="dirText">已停止</div>
+
+  <div class="status-bar">
+    <span class="chip" id="chipHome"><span class="home-led" id="homeLed"></span>归零</span>
+    <span class="chip" id="chipSpeed">偏差: 0μs</span>
+    <span class="chip" id="chipDead">死区: ±0μs</span>
   </div>
 
-  <input type="range" id="slider" min="0" max="180" value="0"
-         oninput="setAngle(this.value)">
+  <!-- 主控滑块 -->
+  <div class="section">
+    <h3>方向 / 速度</h3>
+    <div class="slider-row">
+      <input type="range" id="speedSlider" min="-200" max="200" value="0" step="5"
+             oninput="onSlider(this.value)">
+      <label><span>CW 快</span><span>0 停止</span><span>CCW 快</span></label>
+    </div>
+  </div>
+
+  <!-- 死区 & 停止中心微调 -->
+  <div class="section">
+    <h3>死区 & 停止中心微调</h3>
+    <div class="slider-row">
+      <label>停止中心偏移 <span><span id="trimVal">0</span>μs</span></label>
+      <input type="range" id="trimSlider" min="-50" max="50" value="0" step="1"
+             oninput="updateTrim(this.value)">
+    </div>
+    <div class="slider-row">
+      <label>死区范围 <span>±<span id="deadVal">0</span>μs</span></label>
+      <input type="range" id="deadSlider" min="0" max="30" value="0" step="1"
+             oninput="updateDead(this.value)">
+      <span style="font-size:10px;color:#666">偏差在死区内=停止，越过死区才开始转</span>
+    </div>
+  </div>
+
+  <!-- 预设速度 -->
+  <div class="section">
+    <h3>预设速度</h3>
+    <div class="btn-row">
+      <button class="btn-preset cw" onclick="setSpeed(-20)">CW 慢</button>
+      <button class="btn-preset cw" onclick="setSpeed(-50)">CW 中</button>
+      <button class="btn-preset cw" onclick="setSpeed(-100)">CW 快</button>
+      <button class="btn-preset ccw" onclick="setSpeed(20)">CCW 慢</button>
+      <button class="btn-preset ccw" onclick="setSpeed(50)">CCW 中</button>
+      <button class="btn-preset ccw" onclick="setSpeed(100)">CCW 快</button>
+    </div>
+  </div>
 
   <div class="btn-row">
-    <button class="btn-step" onclick="adjust(-10)">-10</button>
-    <button class="btn-step" onclick="adjust(-5)">-5</button>
-    <button class="btn-step" onclick="adjust(-1)">-1</button>
-    <button class="btn-step" onclick="adjust(1)">+1</button>
-    <button class="btn-step" onclick="adjust(5)">+5</button>
-    <button class="btn-step" onclick="adjust(10)">+10</button>
+    <button class="btn-stop" onclick="doStop()">停止</button>
   </div>
 
-  <div class="btn-row">
-    <button class="btn-zero" onclick="goZero()">归零 (安装位)</button>
-  </div>
-
-  <div class="slot-grid">
-    <button class="btn-slot" style="background:#e94560" onclick="goSlot(0)">槽0 LOGO</button>
-    <button class="btn-slot" onclick="goSlot(1)">槽1 药品</button>
-    <button class="btn-slot" onclick="goSlot(2)">槽2 药品</button>
-    <button class="btn-slot" onclick="goSlot(3)">槽3 药品</button>
-    <button class="btn-slot" onclick="goSlot(4)">槽4 药品</button>
-    <button class="btn-slot" onclick="goSlot(5)">槽5 药品</button>
-    <button class="btn-slot" onclick="goSlot(6)">槽6 药品</button>
-    <button class="btn-slot" onclick="goSlot(7)">槽7 药品</button>
-  </div>
-
-  <div class="status" id="status"></div>
+  <div class="msg" id="msg"></div>
 </div>
 
 <script>
-let currentAngle = 0;
+let currentPwm = 1500;
+let currentDev = 0;
+let moving = false;
+let homeTriggered = false;
+let stopTrim = 0;
+let deadBand = 0;
+let center = 1500;
 
 async function api(method, path, body) {
   try {
@@ -112,64 +149,101 @@ async function api(method, path, body) {
       opts.body = JSON.stringify(body);
     }
     let r = await fetch(path, opts);
-    let data = await r.json();
-    return data;
+    return await r.json();
   } catch(e) {
-    document.getElementById('status').textContent = '连接失败: ' + e.message;
     return null;
   }
 }
 
 async function refresh() {
-  let data = await api('GET', '/api/servo/angle');
-  if (data) {
-    currentAngle = data.angle;
-    document.getElementById('angleText').textContent = data.angle + '';
-    document.getElementById('slotText').textContent = data.slot;
-    document.getElementById('slider').value = data.angle;
-    document.getElementById('status').textContent = '';
+  let data = await api('GET', '/api/servo/status');
+  if (!data) return;
+
+  currentPwm = data.pulse;
+  currentDev = data.deviation;
+  moving = data.moving;
+  homeTriggered = data.home_triggered;
+  stopTrim = data.stop_trim || 0;
+  deadBand = data.dead_band || 0;
+  center = data.center || 1500;
+
+  document.getElementById('pwmText').textContent = currentPwm;
+  document.getElementById('centerText').textContent = center;
+
+  let dirEl = document.getElementById('dirText');
+  let ab = Math.abs(currentDev);
+  if (!moving || ab <= deadBand) {
+    dirEl.textContent = '已停止';
+    dirEl.className = 'dir-indicator';
+  } else if (currentDev > 0) {
+    dirEl.textContent = '逆时针 CCW (' + currentDev + 'μs)';
+    dirEl.className = 'dir-indicator ccw';
+  } else {
+    dirEl.textContent = '顺时针 CW (' + (-currentDev) + 'μs)';
+    dirEl.className = 'dir-indicator cw';
   }
+
+  let hl = document.getElementById('homeLed');
+  let hc = document.getElementById('chipHome');
+  if (homeTriggered) {
+    hl.className = 'home-led on';
+    hc.className = 'chip ok';
+  } else {
+    hl.className = 'home-led';
+    hc.className = 'chip';
+  }
+
+  document.getElementById('chipSpeed').textContent =
+    '偏差: ' + (currentDev >= 0 ? '+' : '') + currentDev + 'μs';
+  document.getElementById('chipDead').textContent =
+    '死区: ±' + deadBand + 'μs';
+
+  let ss = document.getElementById('speedSlider');
+  if (Math.abs(ss.value - currentDev) > 5) ss.value = currentDev;
+
+  document.getElementById('trimSlider').value = stopTrim;
+  document.getElementById('trimVal').textContent = (stopTrim >= 0 ? '+' : '') + stopTrim;
+  document.getElementById('deadSlider').value = deadBand;
+  document.getElementById('deadVal').textContent = deadBand;
 }
 
-async function setAngle(v) {
-  let data = await api('POST', '/api/servo/angle', { angle: parseInt(v) });
-  if (data) {
-    currentAngle = data.angle;
-    document.getElementById('angleText').textContent = data.angle + '';
-    document.getElementById('slotText').textContent = data.slot;
-    document.getElementById('status').textContent = '已设置 ' + data.angle + '';
-  }
+function onSlider(v) {
+  let dev = parseInt(v);
+  document.getElementById('msg').textContent = '偏差: ' + (dev >= 0 ? '+' : '') + dev + 'μs';
+  sendSpeed(dev);
 }
 
-async function adjust(d) { await setAngle(currentAngle + d); }
-
-async function goZero() {
-  document.getElementById('status').textContent = '归零中...';
-  let data = await api('POST', '/api/servo/zero');
-  if (data) {
-    document.getElementById('angleText').textContent = '0';
-    document.getElementById('slotText').textContent = '0 (LOGO)';
-    document.getElementById('slider').value = 0;
-    currentAngle = 0;
-    document.getElementById('status').textContent = '已归零，可以安装舵机';
-  }
+async function setSpeed(dev) {
+  document.getElementById('speedSlider').value = dev;
+  await sendSpeed(dev);
 }
 
-async function goSlot(n) {
-  document.getElementById('status').textContent = '旋转中...';
-  let data = await api('POST', '/api/servo/slot', { slot: n });
-  if (data) {
-    document.getElementById('angleText').textContent = data.angle + '';
-    document.getElementById('slotText').textContent = data.slot;
-    document.getElementById('slider').value = data.angle;
-    currentAngle = data.angle;
-    document.getElementById('status').textContent =
-      n === 0 ? '槽位0 - LOGO 展示位' : '槽位' + n + ' - 药品槽，角度=' + data.angle + '';
-  }
+async function sendSpeed(dev) {
+  currentDev = dev;
+  await api('POST', '/api/servo/rotate', { deviation: dev });
+}
+
+async function doStop() {
+  document.getElementById('speedSlider').value = 0;
+  currentDev = 0;
+  await api('POST', '/api/servo/stop');
+  document.getElementById('msg').textContent = '已停止';
+}
+
+async function updateTrim(v) {
+  stopTrim = parseInt(v);
+  document.getElementById('trimVal').textContent = (stopTrim >= 0 ? '+' : '') + stopTrim;
+  await api('POST', '/api/servo/stop_trim', { stop_trim: stopTrim });
+}
+
+async function updateDead(v) {
+  deadBand = parseInt(v);
+  document.getElementById('deadVal').textContent = deadBand;
+  await api('POST', '/api/servo/dead_band', { dead_band: deadBand });
 }
 
 refresh();
-setInterval(refresh, 2000);
+setInterval(refresh, 400);
 </script>
 </body>
 </html>
@@ -183,103 +257,118 @@ public:
     void RegisterHandlers(httpd_handle_t server) {
         server_ = server;
 
-        // GET /servo-debug
         RegisterUri("/servo-debug", HTTP_GET,
             [](httpd_req_t* req) {
                 httpd_resp_set_type(req, "text/html; charset=utf-8");
-                httpd_resp_send(req, SERVO_DEBUG_HTML,
-                                HTTPD_RESP_USE_STRLEN);
+                httpd_resp_send(req, SERVO_DEBUG_HTML, HTTPD_RESP_USE_STRLEN);
                 return ESP_OK;
             });
 
-        // GET /api/servo/angle
-        RegisterUri("/api/servo/angle", HTTP_GET,
+        // GET /api/servo/status
+        RegisterUri("/api/servo/status", HTTP_GET,
             [this](httpd_req_t* req) {
-                cJSON* root = cJSON_CreateObject();
-                cJSON_AddNumberToObject(root, "angle",
-                    dispenser_->GetAngle());
-                cJSON_AddNumberToObject(root, "slot",
-                    dispenser_->CurrentSlot());
-                char* js = cJSON_PrintUnformatted(root);
+                cJSON* r = cJSON_CreateObject();
+                cJSON_AddNumberToObject(r, "pulse", dispenser_->GetPulse());
+                cJSON_AddNumberToObject(r, "deviation", dispenser_->GetDeviation());
+                cJSON_AddBoolToObject(r, "moving", dispenser_->IsMoving());
+                cJSON_AddBoolToObject(r, "home_triggered", dispenser_->IsHomeTriggered());
+                cJSON_AddNumberToObject(r, "stop_trim", dispenser_->GetStopTrim());
+                cJSON_AddNumberToObject(r, "dead_band", dispenser_->GetDeadBand());
+                cJSON_AddNumberToObject(r, "center", dispenser_->EffectiveCenter());
+                char* js = cJSON_PrintUnformatted(r);
                 httpd_resp_set_type(req, "application/json");
                 httpd_resp_send(req, js, HTTPD_RESP_USE_STRLEN);
                 cJSON_free(js);
-                cJSON_Delete(root);
+                cJSON_Delete(r);
                 return ESP_OK;
             });
 
-        // POST /api/servo/angle
-        RegisterUri("/api/servo/angle", HTTP_POST,
-            [this](httpd_req_t* req) {
-                char buf[64];
-                int ret = httpd_req_recv(req, buf, sizeof(buf) - 1);
-                if (ret <= 0) return ESP_FAIL;
-                buf[ret] = '\0';
-
-                cJSON* json = cJSON_Parse(buf);
-                if (!json) return ESP_FAIL;
-
-                cJSON* angle_json = cJSON_GetObjectItem(json, "angle");
-                if (cJSON_IsNumber(angle_json)) {
-                    dispenser_->SetAngle(angle_json->valueint);
-                }
-                cJSON_Delete(json);
-
-                cJSON* resp = cJSON_CreateObject();
-                cJSON_AddNumberToObject(resp, "angle",
-                    dispenser_->GetAngle());
-                cJSON_AddNumberToObject(resp, "slot",
-                    dispenser_->CurrentSlot());
-                char* js = cJSON_PrintUnformatted(resp);
-                httpd_resp_set_type(req, "application/json");
-                httpd_resp_send(req, js, HTTPD_RESP_USE_STRLEN);
-                cJSON_free(js);
-                cJSON_Delete(resp);
-                return ESP_OK;
-            });
-
-        // POST /api/servo/zero
-        RegisterUri("/api/servo/zero", HTTP_POST,
-            [this](httpd_req_t* req) {
-                dispenser_->Zero();
-                cJSON* resp = cJSON_CreateObject();
-                cJSON_AddNumberToObject(resp, "angle", 0);
-                cJSON_AddNumberToObject(resp, "slot", 0);
-                char* js = cJSON_PrintUnformatted(resp);
-                httpd_resp_set_type(req, "application/json");
-                httpd_resp_send(req, js, HTTPD_RESP_USE_STRLEN);
-                cJSON_free(js);
-                cJSON_Delete(resp);
-                return ESP_OK;
-            });
-
-        // POST /api/servo/slot
-        RegisterUri("/api/servo/slot", HTTP_POST,
+        // POST /api/servo/rotate
+        RegisterUri("/api/servo/rotate", HTTP_POST,
             [this](httpd_req_t* req) {
                 char buf[64];
                 int ret = httpd_req_recv(req, buf, sizeof(buf) - 1);
                 if (ret <= 0) return ESP_FAIL;
                 buf[ret] = '\0';
-
                 cJSON* json = cJSON_Parse(buf);
                 if (!json) return ESP_FAIL;
-
-                cJSON* slot_json = cJSON_GetObjectItem(json, "slot");
-                if (cJSON_IsNumber(slot_json)) {
-                    dispenser_->GoToSlot(slot_json->valueint);
-                }
+                cJSON* item = cJSON_GetObjectItem(json, "deviation");
+                if (cJSON_IsNumber(item))
+                    dispenser_->Rotate(item->valueint);
                 cJSON_Delete(json);
 
-                cJSON* resp = cJSON_CreateObject();
-                cJSON_AddNumberToObject(resp, "angle",
-                    dispenser_->GetAngle());
-                cJSON_AddNumberToObject(resp, "slot",
-                    dispenser_->CurrentSlot());
-                char* js = cJSON_PrintUnformatted(resp);
+                cJSON* r = cJSON_CreateObject();
+                cJSON_AddNumberToObject(r, "pulse", dispenser_->GetPulse());
+                cJSON_AddNumberToObject(r, "deviation", dispenser_->GetDeviation());
+                char* js = cJSON_PrintUnformatted(r);
                 httpd_resp_set_type(req, "application/json");
                 httpd_resp_send(req, js, HTTPD_RESP_USE_STRLEN);
                 cJSON_free(js);
-                cJSON_Delete(resp);
+                cJSON_Delete(r);
+                return ESP_OK;
+            });
+
+        // POST /api/servo/stop
+        RegisterUri("/api/servo/stop", HTTP_POST,
+            [this](httpd_req_t* req) {
+                dispenser_->Stop();
+                cJSON* r = cJSON_CreateObject();
+                cJSON_AddBoolToObject(r, "ok", true);
+                cJSON_AddNumberToObject(r, "pulse", dispenser_->GetPulse());
+                char* js = cJSON_PrintUnformatted(r);
+                httpd_resp_set_type(req, "application/json");
+                httpd_resp_send(req, js, HTTPD_RESP_USE_STRLEN);
+                cJSON_free(js);
+                cJSON_Delete(r);
+                return ESP_OK;
+            });
+
+        // POST /api/servo/stop_trim
+        RegisterUri("/api/servo/stop_trim", HTTP_POST,
+            [this](httpd_req_t* req) {
+                char buf[64];
+                int ret = httpd_req_recv(req, buf, sizeof(buf) - 1);
+                if (ret <= 0) return ESP_FAIL;
+                buf[ret] = '\0';
+                cJSON* json = cJSON_Parse(buf);
+                if (!json) return ESP_FAIL;
+                cJSON* item = cJSON_GetObjectItem(json, "stop_trim");
+                if (cJSON_IsNumber(item))
+                    dispenser_->SetStopTrim(item->valueint);
+                cJSON_Delete(json);
+
+                cJSON* r = cJSON_CreateObject();
+                cJSON_AddNumberToObject(r, "center", dispenser_->EffectiveCenter());
+                cJSON_AddNumberToObject(r, "stop_trim", dispenser_->GetStopTrim());
+                char* js = cJSON_PrintUnformatted(r);
+                httpd_resp_set_type(req, "application/json");
+                httpd_resp_send(req, js, HTTPD_RESP_USE_STRLEN);
+                cJSON_free(js);
+                cJSON_Delete(r);
+                return ESP_OK;
+            });
+
+        // POST /api/servo/dead_band
+        RegisterUri("/api/servo/dead_band", HTTP_POST,
+            [this](httpd_req_t* req) {
+                char buf[64];
+                int ret = httpd_req_recv(req, buf, sizeof(buf) - 1);
+                if (ret <= 0) return ESP_FAIL;
+                buf[ret] = '\0';
+                cJSON* json = cJSON_Parse(buf);
+                if (!json) return ESP_FAIL;
+                cJSON* item = cJSON_GetObjectItem(json, "dead_band");
+                if (cJSON_IsNumber(item))
+                    dispenser_->SetDeadBand(item->valueint);
+                cJSON_Delete(json);
+
+                cJSON* r = cJSON_CreateObject();
+                cJSON_AddNumberToObject(r, "dead_band", dispenser_->GetDeadBand());
+                char* js = cJSON_PrintUnformatted(r);
+                httpd_resp_set_type(req, "application/json");
+                httpd_resp_send(req, js, HTTPD_RESP_USE_STRLEN);
+                cJSON_free(js);
+                cJSON_Delete(r);
                 return ESP_OK;
             });
 

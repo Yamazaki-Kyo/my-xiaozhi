@@ -13,6 +13,7 @@
 #include "servo_debug_server.h"
 #include "scheduler_server.h"
 #include "medicine_box_display.h"
+#include "tts_player.h"
 
 #include <esp_http_server.h>
 #include <esp_log.h>
@@ -249,10 +250,10 @@ public:
         InitializeLcdDisplay();
         InitializeButtons();
 
-        // 舵机初始化 (GPIO12 PWM, 50Hz)
-        dispenser_ = new MedicineDispenser(SERVO_PWM_PIN);
-        dispenser_->Zero();
-        ESP_LOGI(TAG, "舵机已归零 (槽位0/logo), 角度=0°");
+        // 360° 舵机调试模式 (无开机校准)
+        dispenser_ = new MedicineDispenser(SERVO_PWM_PIN,
+                                           SERVO_HOME_SWITCH_GPIO);
+        ESP_LOGI(TAG, "舵机调试模式就绪 (PWM: GPIO12, 开关: GPIO5)");
 
         // 舵机调试服务器对象 (稍后网络就绪时注册路由)
         servo_debug_server_ = new ServoDebugServer(dispenser_);
@@ -267,9 +268,10 @@ public:
             app.Schedule([text]() {
                 Application::GetInstance().Alert("定时任务", text.c_str(), "bell");
             });
-            // 请求服务器 TTS 真人语音播报
-            app.SendTtsRequest("定时任务已执行，" + text);
+            // 本地中文 TTS 语音播报
+            ChineseTtsPlayer::GetInstance().Speak("定时任务已执行，" + text);
         });
+
 
         // === MCP 工具注册 ===
         // WxPusher 微信推送

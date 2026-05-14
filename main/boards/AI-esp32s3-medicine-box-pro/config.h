@@ -34,8 +34,11 @@
 #define BUILTIN_LED_GPIO        GPIO_NUM_48
 #define BOOT_BUTTON_GPIO        GPIO_NUM_0
 
-// 180° 舵机 PWM (LEDC 50Hz)
+// 360° 舵机 PWM (LEDC 50Hz, 纯时间控制)
 #define SERVO_PWM_PIN GPIO_NUM_12
+
+// 360° 舵机归零检测开关 (仅槽位0触发, 用于绝对位置校准)
+#define SERVO_HOME_SWITCH_GPIO GPIO_NUM_5
 
 // 定时调度器 LED (GPIO3, 高电平亮)
 #define SCHEDULER_LED_GPIO GPIO_NUM_3

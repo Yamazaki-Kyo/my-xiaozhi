@@ -1045,6 +1045,25 @@ add_custom_target(lang_header ALL
 find_component_by_pattern("espressif__esp-sr" ESP_SR_COMPONENT ESP_SR_COMPONENT_PATH)
 if(ESP_SR_COMPONENT_PATH)
     set(ESP_SR_MODEL_PATH "${ESP_SR_COMPONENT_PATH}/model")
+    # Embed xiaole voice data (.dat) as binary blob for runtime loading
+    set(TTS_DATA_FILE "${ESP_SR_COMPONENT_PATH}/esp-tts/esp_tts_chinese/esp_tts_voice_data_xiaole.dat")
+    set(TTS_DATA_OBJ "${CMAKE_BINARY_DIR}/tts_voice_data_xiaole.o")
+    if(EXISTS "${TTS_DATA_FILE}")
+        add_custom_command(
+            OUTPUT ${TTS_DATA_OBJ}
+            COMMAND ${CMAKE_OBJCOPY} -I binary -O elf32-xtensa-le -B xtensa
+                --rename-section .data=.rodata.embedded,alloc,load,readonly,data,contents
+                esp_tts_voice_data_xiaole.dat ${TTS_DATA_OBJ}
+            WORKING_DIRECTORY "${ESP_SR_COMPONENT_PATH}/esp-tts/esp_tts_chinese"
+            DEPENDS "${TTS_DATA_FILE}"
+            COMMENT "Embedding xiaole TTS voice data"
+        )
+        add_custom_target(tts_voice_data DEPENDS ${TTS_DATA_OBJ})
+        add_dependencies(${COMPONENT_LIB} tts_voice_data)
+        target_link_libraries(${COMPONENT_LIB} PRIVATE ${TTS_DATA_OBJ})
+    else()
+        message(WARNING "TTS voice data file not found: ${TTS_DATA_FILE}")
+    endif()
 endif()
 
 # Find xiaozhi-fonts component dynamically
