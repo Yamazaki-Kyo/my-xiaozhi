@@ -78,8 +78,8 @@ public:
         SetPwm(current_pulse_);
         prev_dev_ = dev;
         moving_ = true;
-        ESP_LOGI(TAG_SERVO, "旋转: %+dμs (PWM=%luμs, 中心=%lu, 死区=%d)",
-                 dev, current_pulse_, EffectiveCenter(), dead_band_);
+        ESP_LOGI(TAG_SERVO, "旋转: %+dμs (%.0f°/s, PWM=%luμs)",
+                 dev, GetSpeedEstimate(), current_pulse_);
     }
 
     void Stop() {
@@ -120,6 +120,20 @@ public:
                  EffectiveCenter(), stop_trim_);
     }
 
+    // === 速度因子 (μs → °/s 换算) ===
+
+    float    GetSpeedFactor() const { return speed_factor_; }
+    void     SetSpeedFactor(float f) {
+        if (f < 0.1f) f = 0.1f;
+        if (f > 1.0f) f = 1.0f;
+        speed_factor_ = f;
+        ESP_LOGI(TAG_SERVO, "速度因子: %.2f°/s/μs (最大 %.0f°/s)",
+                 speed_factor_, MAX_DEV * speed_factor_);
+    }
+    float    GetSpeedEstimate() const {
+        return abs(GetDeviation()) * speed_factor_;
+    }
+
     uint32_t EffectiveCenter() const { return STOP_US + stop_trim_; }
     uint32_t GetPulse()        const { return current_pulse_; }
     int      GetDeviation()    const { return (int)current_pulse_ - (int)EffectiveCenter(); }
@@ -127,7 +141,7 @@ public:
     bool     IsHomeTriggered() const { return gpio_get_level(home_switch_pin_) == 0; }
 
     static constexpr uint32_t STOP_US = 1500;
-    static constexpr int      MAX_DEV = 200;
+    static constexpr int      MAX_DEV = 300;
 
 private:
     static constexpr uint32_t PERIOD_US = 20000;
@@ -137,8 +151,9 @@ private:
     uint32_t   current_pulse_ = STOP_US;
     bool       moving_ = false;
     int        prev_dev_  = 0;    // 上一次偏差, 用于检测方向切换
-    int        dead_band_ = 0;    // ±μs 死区, |dev|<=此值视为停止
-    int        stop_trim_ = 0;    // 停止中心偏移 (-50~+50)
+    int        dead_band_ = 0;     // ±μs 死区, |dev|<=此值视为停止
+    int        stop_trim_ = 0;     // 停止中心偏移 (-50~+50)
+    float      speed_factor_ = 0.3f; // μs→°/s 换算系数
 
     void SendStopPulse() {
         current_pulse_ = EffectiveCenter();
