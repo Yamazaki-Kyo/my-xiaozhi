@@ -12,8 +12,9 @@
 #include "servo_controller.h"
 #include "servo_debug_server.h"
 #include "scheduler_server.h"
+#include "medicine_config_server.h"
 #include "medicine_box_display.h"
-#include "tts_player.h"
+#include "assets/lang_config.h"
 
 #include <esp_http_server.h>
 #include <esp_log.h>
@@ -88,7 +89,9 @@ private:
     MedicineDispenser* dispenser_ = nullptr;
     ServoDebugServer* servo_debug_server_ = nullptr;
     SchedulerServer* scheduler_server_ = nullptr;
+    MedicineConfigServer* medicine_config_server_ = nullptr;
     esp_timer_handle_t http_retry_timer_ = nullptr;
+    esp_timer_handle_t med_check_timer_ = nullptr;
     esp_timer_handle_t ip_poll_timer_ = nullptr;
     esp_timer_handle_t display_refresh_timer_ = nullptr;
     int http_retry_count_ = 0;
@@ -99,7 +102,7 @@ private:
         auto* self = (MedicineBoxProBoard*)arg;
         httpd_handle_t http_server = nullptr;
         httpd_config_t http_cfg = HTTPD_DEFAULT_CONFIG();
-        http_cfg.max_uri_handlers = 16;
+        http_cfg.max_uri_handlers = 20;
         http_cfg.uri_match_fn = httpd_uri_match_wildcard;
 
         if (httpd_start(&http_server, &http_cfg) == ESP_OK) {
@@ -108,15 +111,16 @@ private:
 
             self->servo_debug_server_->RegisterHandlers(http_server);
             self->scheduler_server_->RegisterHttpHandlers(http_server);
+            self->medicine_config_server_->RegisterHttpHandlers(http_server);
 
             // 在 LCD 屏幕上显示访问网址
             auto& wifi = WifiManager::GetInstance();
             std::string ip = wifi.GetIpAddress();
             if (!ip.empty() && ip != "0.0.0.0") {
-                std::string msg = "定时调度: http://" + ip + "/scheduler\n"
-                                  "舵机调试: http://" + ip + "/servo-debug";
+                std::string msg = "智能药盒: http://" + ip + "/medicine-config\n"
+                                  "定时调度: http://" + ip + "/scheduler";
                 self->display_->ShowNotification(msg, 15000);
-                ESP_LOGI(TAG, "舵机调试页面: http://%s/servo-debug", ip.c_str());
+                ESP_LOGI(TAG, "智能药盒配置: http://%s/medicine-config", ip.c_str());
                 ESP_LOGI(TAG, "定时调度器页面: http://%s/scheduler", ip.c_str());
             } else {
                 // DHCP 尚未分配 IP，启动轮询等待
@@ -144,11 +148,23 @@ private:
         std::string ip = wifi.GetIpAddress();
         if (!ip.empty() && ip != "0.0.0.0") {
             esp_timer_stop(self->ip_poll_timer_);
-            std::string msg = "定时调度: http://" + ip + "/scheduler\n"
-                              "舵机调试: http://" + ip + "/servo-debug";
+            std::string msg = "智能药盒: http://" + ip + "/medicine-config\n"
+                              "定时调度: http://" + ip + "/scheduler";
             self->display_->ShowNotification(msg, 15000);
-            ESP_LOGI(TAG, "舵机调试页面: http://%s/servo-debug", ip.c_str());
+            ESP_LOGI(TAG, "智能药盒配置: http://%s/medicine-config", ip.c_str());
             ESP_LOGI(TAG, "定时调度器页面: http://%s/scheduler", ip.c_str());
+        }
+    }
+
+    static void MedCheckCallback(void* arg) {
+        auto* self = (MedicineBoxProBoard*)arg;
+        if (self->medicine_config_server_) {
+            auto alert_msg = self->medicine_config_server_->CheckAndNotify();
+            if (!alert_msg.empty() && self->display_) {
+                // 屏幕同步显示用药提醒
+                std::string full = "该吃药了! " + alert_msg;
+                self->display_->ShowNotification(full, 10000);
+            }
         }
     }
 
@@ -168,9 +184,9 @@ private:
         }
         self->display_->SetPushStatus(status.empty() ? "--" : status);
 
-        if (self->scheduler_server_) {
-            self->display_->SetTimerEvents(
-                self->scheduler_server_->GetEventsSummary());
+        if (self->medicine_config_server_) {
+            self->display_->SetMedPlan(
+                self->medicine_config_server_->GetPlanSummary());
         }
     }
 
@@ -251,9 +267,8 @@ public:
         InitializeButtons();
 
         // 360° 舵机调试模式 (无开机校准)
-        dispenser_ = new MedicineDispenser(SERVO_PWM_PIN,
-                                           SERVO_HOME_SWITCH_GPIO);
-        ESP_LOGI(TAG, "舵机调试模式就绪 (PWM: GPIO12, 开关: GPIO5)");
+        dispenser_ = new MedicineDispenser(SERVO_PWM_PIN, GPIO_NUM_NC);
+        ESP_LOGI(TAG, "舵机调试模式就绪 (PWM: GPIO12)");
 
         // 舵机调试服务器对象 (稍后网络就绪时注册路由)
         servo_debug_server_ = new ServoDebugServer(dispenser_);
@@ -261,17 +276,39 @@ public:
         // 定时调度器 (核心逻辑独立于 HTTP，稍后网络就绪时注册路由)
         scheduler_server_ = new SchedulerServer(SCHEDULER_LED_GPIO);
 
-        // 设置事件触发回调：定时任务执行时用小智播报
+        // 设置事件触发回调：定时任务执行时播报
         scheduler_server_->SetEventCallback([](const char* msg) {
             auto& app = Application::GetInstance();
             std::string text(msg);
             app.Schedule([text]() {
-                Application::GetInstance().Alert("定时任务", text.c_str(), "bell");
+                Application::GetInstance().Alert("定时任务", text.c_str(), "");
             });
-            // 本地中文 TTS 语音播报
-            ChineseTtsPlayer::GetInstance().Speak("定时任务已执行，" + text);
         });
 
+        // 智能药盒用药配置 (稍后网络就绪时注册路由)
+        medicine_config_server_ = new MedicineConfigServer();
+
+        // 用药提醒回调：到点时屏幕通知 + OGG 语音播报
+        medicine_config_server_->SetEventCallback([](const char* msg) {
+            auto& app = Application::GetInstance();
+            std::string text(msg);
+            app.Schedule([text]() {
+                Application::GetInstance().Alert("用药提醒", text.c_str(), "");
+            });
+            // 播放预录制 OGG 吃药提醒语音
+            Application::GetInstance().PlaySound(Lang::Sounds::OGG_MED_REMINDER);
+        });
+
+        // 用药提醒检查定时器 (每 30 秒)
+        {
+            esp_timer_create_args_t med_args = {};
+            med_args.callback = MedCheckCallback;
+            med_args.arg = this;
+            med_args.dispatch_method = ESP_TIMER_TASK;
+            med_args.name = "med_check";
+            esp_timer_create(&med_args, &med_check_timer_);
+            esp_timer_start_periodic(med_check_timer_, 30000000); // 30秒
+        }
 
         // === MCP 工具注册 ===
         // WxPusher 微信推送
