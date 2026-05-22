@@ -9,14 +9,15 @@
 | 3    | I2S 数字麦克风     | INMP441                              | 1      | 语音输入         |
 | 4    | I2S 数字功放       | MAX98357A                            | 1      | 语音输出         |
 | 5    | 喇叭               | 3W / 4Ω                              | 1      | 语音播报         |
-| 6    | LCD 显示屏         | ST7789 240x320 SPI (8Pin)            | 1      | 信息展示         |
+| 6    | LCD 显示屏         | ST7789 240x240 SPI 1.54寸 (8Pin)      | 1      | 信息展示         |
 | 7    | 心率血氧传感器     | MAX30102                             | 1      | 健康检测         |
-| 8    | 180° 舵机          | MG90S / MG996R                       | 1      | 药品转盘驱动     |
-| 9    | LED                | 5mm 红色 LED                         | 1      | 状态指示         |
-| 10   | 轻触开关           | 6x6mm                                | 1      | 物理按键         |
-| 11   | 3D 打印药盒外壳    | PLA / 8 槽转盘结构 (1 logo + 7 药)   | 1 套   | 机械结构         |
-| 12   | 淘晶驰串口屏       | TJC X2系列 7寸 电容触摸 (UART)       | 1      | 本地配置后台     |
-| 13   | 杜邦线 + 面包板    | —                                    | 若干   | 原型验证         |
+| 8    | 360° 连续旋转舵机   | DS04-NFC / 360° 改装舵机              | 1      | 药品转盘驱动     |
+| 9    | LED                | 5mm 红色 LED ×2                       | 2      | 状态指示 (GPIO48) + 调度指示 (GPIO3) |
+| 10   | 轻触开关           | 6x6mm                                | 3      | 物理按键 (BOOT + 静音 + 2× 微动开关) |
+| 11   | 微动开关           | KW12-3                               | 2      | 转盘定位: SW0(槽0) GPIO1, SW1(槽1~7) GPIO2 |
+| 12   | 3D 打印药盒外壳    | PLA / 8 槽转盘结构 (1 logo + 7 药)   | 1 套   | 机械结构         |
+| 13   | 淘晶驰串口屏       | TJC X2系列 7寸 电容触摸 (UART)       | 1      | 本地配置后台     |
+| 14   | 杜邦线 + 面包板    | —                                    | 若干   | 原型验证         |
 
 ### 引脚接线
 
@@ -24,12 +25,12 @@
 
 | ESP32-S3 引脚 | 外设                         | 信号                        |
 |:-------------:|------------------------------|-----------------------------|
-| GPIO1         | INMP441                      | WS (数据选择)               |
-| GPIO2         | INMP441                      | SCK (时钟)                  |
-| GPIO42        | INMP441                      | SD (数据)                   |
-| GPIO39        | MAX98357A                    | DIN (数字信号)              |
-| GPIO40        | MAX98357A                    | BCLK (位时钟)               |
-| GPIO41        | MAX98357A                    | LRC (左/右时钟)             |
+| GPIO4         | INMP441                      | WS (数据选择)               |
+| GPIO5         | INMP441                      | SCK (时钟)                  |
+| GPIO6        | INMP441                      | SD (数据)                   |
+| GPIO7        | MAX98357A                    | DIN (数字信号)              |
+| GPIO15        | MAX98357A                    | BCLK (位时钟)               |
+| GPIO16        | MAX98357A                    | LRC (左/右时钟)             |
 | GPIO20        | LCD                          | MOSI (数据)                 |
 | GPIO19        | LCD                          | SCLK (时钟)                 |
 | GPIO47        | LCD                          | DC (数据选择)               |
@@ -38,8 +39,12 @@
 | GPIO38        | LCD                          | BLK (背光)                  |
 | GPIO17        | MAX30102                     | SDA (I2C 数据)              |
 | GPIO18        | MAX30102                     | SCL (I2C 时钟)              |
-| GPIO12        | 180° 舵机                    | PWM (信号线)                |
-| GPIO48        | LED                          | 阳极 (通过 220Ω 限流)      |
+| GPIO12        | 360° 舵机                    | PWM (信号线)                |
+| GPIO1         | 微动开关 SW0                 | 槽0 归零检测 (内部上拉)     |
+| GPIO2         | 微动开关 SW1                 | 槽1~7 计数 (内部上拉)       |
+| GPIO10        | 静音/确认按键                | 停止提醒 + 转盘归零 (内部上拉) |
+| GPIO3         | 调度器 LED                   | 阳极 (通过 220Ω 限流)       |
+| GPIO48        | LED                          | 阳极 (通过 220Ω 限流)       |
 | GPIO0         | 按键                         | 一端接 GND，内置上拉        |
 
 #### XiaoZhi ESP32-S3 ↔ K230D 视觉模组 (UART2)
@@ -66,34 +71,22 @@
 
 ---
 
-### 180° 舵机控制方案
+### 360° 舵机 + 双微动开关定位方案
 
-> 180° 舵机通过 PWM 脉宽直接指定绝对角度（500-2500μs → 0-180°），**停止后自带保持力矩**，无需归位传感器，药盒关闭时转盘无法被外力旋转出槽。
+> 本方案使用 **360° 连续旋转舵机**（只能顺时针），通过两个微动开关实现 8 槽精确定位。SW0 专用于检测槽位 0（归零位），SW1 用于槽位 1~7 的经过计数。每次上电自动执行寻零流程。
 
-**与 360° 舵机的关键区别**：
+**360° 舵机特性**：
 
-| 特性           | 180° 舵机（本方案）              | 360° 舵机（已舍弃）              |
-|----------------|--------------------------------|---------------------------------|
-| 控制方式       | PWM → 绝对角度                  | PWM → 转速和方向 → 时间控制     |
-| 位置保持       | 自带保持力矩，外力推不动         | 停止后无保持力矩，可能被转出     |
-| 归位传感器     | 不需要                          | 必须（微动开关等）              |
-| 代码复杂度     | 低，`SetAngle()` 一句话到位      | 高，需 ISR + 超时检测 + 校准    |
-| 可靠性         | 高                              | 中（依赖传感器和软件追踪）      |
+| 特性           | 360° 连续旋转舵机                     |
+|----------------|--------------------------------------|
+| 控制方式       | PWM → 转速 (脉宽偏离 1500μs 越远转速越快) |
+| 停止方式       | PWM = 1500μs 停止，无保持力矩          |
+| 位置检测       | 必须通过微动开关（SW0/SW1）            |
+| 方向限制       | 只能顺时针旋转                         |
+| 代码复杂度     | 高（消抖 + 定时器轮询 + 超时 + 跨圈）   |
+| 可靠性         | 高（硬件传感器闭环，无累积误差）         |
 
 **8 槽转盘布局**：
-
-```
-槽位 0 (logo) = 0°       ← 关闭/待机状态，正面展示 logo
-槽位 1 =  25.7°          ← 药品 1
-槽位 2 =  51.4°          ← 药品 2
-槽位 3 =  77.1°          ← 药品 3
-槽位 4 = 102.9°          ← 药品 4
-槽位 5 = 128.6°          ← 药品 5
-槽位 6 = 154.3°          ← 药品 6
-槽位 7 = 180.0°          ← 药品 7
-
-槽位间隔 = 180° / 7 ≈ 25.7°
-```
 
 ```
            转盘俯视图（8 槽）
@@ -105,99 +98,81 @@
      │   /   5         3    \  │
      │          4              │
      └─────────────────────────┘
+
+SW0 → 仅槽位0触发 (归零位 / logo展示位)
+SW1 → 槽位1~7 每经过一个触发一次计数
 ```
 
-**软件实现**（`servo_controller.h`）：
+**舵机驱动**（`servo_controller.h`）：
 
 ```cpp
 class MedicineDispenser {
 public:
-    MedicineDispenser(gpio_num_t pwm_pin)
-        : current_slot_(0) {
-        // LEDC 定时器 (50Hz PWM, 用于舵机信号)
-        ledc_timer_config_t timer_cfg = {};
-        timer_cfg.speed_mode = LEDC_LOW_SPEED_MODE;
-        timer_cfg.duty_resolution = LEDC_TIMER_13_BIT;
-        timer_cfg.timer_num = LEDC_TIMER_0;
-        timer_cfg.freq_hz = 50;
-        ledc_timer_config(&timer_cfg);
+    MedicineDispenser(gpio_num_t pwm_pin, gpio_num_t feedback_pin);
 
-        ledc_channel_config_t ch_cfg = {};
-        ch_cfg.gpio_num = pwm_pin;
-        ch_cfg.speed_mode = LEDC_LOW_SPEED_MODE;
-        ch_cfg.channel = LEDC_CHANNEL_0;
-        ch_cfg.timer_sel = LEDC_TIMER_0;
-        ch_cfg.duty = AngleToDuty(0);  // 初始: 槽位0 (logo)
-        ledc_channel_config(&ch_cfg);
-
-        GoToSlot(0);  // 上电归位
-    }
-
-    /**
-     * 旋转到指定槽位 (0-7)
-     * 槽位0 = logo展示/关闭状态, 槽位1-7 = 药品
-     * 角度自动保持，无需传感器
-     */
-    void GoToSlot(int slot) {
-        slot = std::clamp(slot, 0, 7);
-        int angle = slot * 180 / 7;  // 0→0°, 1→25.7°, ..., 7→180°
-        SetAngle(angle);
-        current_slot_ = slot;
-    }
-
-    /** 返回 logo 展示位（关闭药盒） */
-    void Close() { GoToSlot(0); }
-
-    /** 打开指定药品槽 (1-7) */
-    void Dispense(int slot) {
-        if (slot < 1 || slot > 7) return;
-        GoToSlot(slot);
-    }
-
-    int CurrentSlot() const { return current_slot_; }
-
-private:
-    static constexpr uint32_t MIN_PULSE_US = 500;   // 0° 对应脉宽
-    static constexpr uint32_t MAX_PULSE_US = 2500;  // 180° 对应脉宽
-    static constexpr uint32_t PWM_PERIOD_US = 20000; // 50Hz
-
-    int current_slot_;
-
-    // 角度 → LEDC duty (13-bit: 0-8191)
-    static uint32_t AngleToDuty(int angle) {
-        // pulse_us = 500 + (angle / 180.0) * 2000
-        uint32_t pulse_us = MIN_PULSE_US +
-            (uint32_t)(angle * 2000ULL / 180);
-        // duty = pulse_us * 8191 / 20000
-        return pulse_us * 8191 / PWM_PERIOD_US;
-    }
-
-    void SetAngle(int angle) {
-        ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0,
-                      AngleToDuty(angle));
-        ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0);
-    }
+    // 360° 舵机: dev 偏离 1500μs 的幅度决定转速
+    // dev=0 → 停止, dev>0 → 顺时针, dev<0 → 逆时针
+    void Rotate(int dev);   // PWM = 1500 + dev
+    void Stop();            // PWM = 1500 (停止)
 };
 
-// 使用示例
-MedicineDispenser dispenser(GPIO_NUM_12);
-dispenser.GoToSlot(3);  // 旋转到 3 号药品槽
-// ... 用户取药 ...
-dispenser.Close();      // 回到 logo 展示位
+// 速度档位:
+// HOMING_DEV = 100  (慢速寻零)
+// NORMAL_DEV = 250  (正常转槽)
 ```
 
-**为什么选择 180° 舵机**：
+**转盘控制**（`pillbox_turntable.h`）：
 
-1. **保持力矩**：PWM 信号持续输出，舵机自带位置保持，药盒关闭时即使外力旋转转盘也无法转动
-2. **无传感器**：不需要归位开关、霍尔元件等额外硬件，减少故障点
-3. **控制简单**：`SetAngle(angle)` 一行代码到位，无超时检测、无 ISR、无校准参数
-4. **上电定位**：上电发送目标 PWM，舵机自动锁定到指定角度
+```cpp
+class PillBoxTurntable {
+public:
+    PillBoxTurntable(MedicineDispenser* dispenser,
+                     gpio_num_t sw0_pin, gpio_num_t sw1_pin);
+
+    void init();           // 上电寻零 (非阻塞, 后台完成)
+    void goToSlot(int n);  // 转到指定药槽 0~7 (跨圈自动处理)
+    void goHome();         // 寻 SW0 回到槽位 0
+    int  getCurrentSlot(); // 获取当前槽位
+    bool isReady();        // 寻零是否完成
+
+private:
+    // 5ms 定时器轮询 SW0/SW1, 20ms 消抖, 150ms 冷却
+    // 10s 超时保护
+    // SW0 触发自动清零 sw1_counter
+};
+```
+
+**使用示例**：
+
+```cpp
+auto* dispenser = new MedicineDispenser(SERVO_PWM_PIN, GPIO_NUM_NC);
+auto* turntable = new PillBoxTurntable(dispenser,
+                                       TURNTABLE_SW0_PIN,  // GPIO1
+                                       TURNTABLE_SW1_PIN); // GPIO2
+turntable->init();       // 启动寻零 (后台运行)
+
+// ... 寻零完成后 ...
+turntable->goToSlot(3);  // 顺时针转至槽位3 (自动跨圈)
+turntable->goHome();     // 回到槽位0
+
+// 用药提醒流程:
+// 1. turntable->goToSlot(slot) → 转盘转至目标槽
+// 2. 用户取药, 按下 GPIO10 按钮
+// 3. turntable->goHome() → 转盘归零
+```
+
+**为什么选择 360° 舵机 + 微动开关**：
+
+1. **无累积误差**：每次经过 SW0 自动清零计数器，永不累积偏移
+2. **闭环定位**：SW1 硬件计数，不依赖时间估算，不受电压/负载波动影响
+3. **跨圈安全**：只能顺时针 + SW0 复位机制，多圈旋转也不会丢失位置
+4. **上电寻零**：每次开机自动寻 SW0 归零，无需记忆断电位置
 
 ---
 
 ### 舵机安装调试网页
 
-在安装舵机前，必须将转盘对准 0°（logo 展示位）装入。板上电后舵机自动归零，可通过 Wi-Fi 网页二次校准。
+在安装舵机前，必须将转盘对准槽 0（logo 展示位）装入。板上电后舵机自动寻零，可通过 Wi-Fi 网页调试。
 
 **访问地址**：`http://<设备IP>/servo-debug`
 
@@ -205,26 +180,19 @@ dispenser.Close();      // 回到 logo 展示位
 
 | 功能       | 说明                                                    |
 |------------|--------------------------------------------------------|
-| 实时角度   | 显示当前角度和对应槽位号，每 2 秒自动刷新               |
-| 滑块控制   | 0-180° 连续调节，拖拽实时响应                           |
-| 步进微调   | ±1° / ±5° / ±10° 按钮，用于精确校准                    |
-| 归零按钮   | 一键回到 0°（logo 展示位），安装前使用                  |
-| 槽位直达   | 8 个槽位按钮（槽0 LOGO + 槽1-7 药品），点击直达目标槽位 |
-
-**安装步骤**：
-
-1. 设备上电，WiFi 配网后获取 IP
-2. 浏览器访问 `http://<IP>/servo-debug`
-3. 点击「归零 (安装位)」确认舵机在 0°
-4. 将转盘槽位 0（logo 面）对准取药口装入
-5. 用槽位按钮逐槽验证对准情况
+| 实时状态   | 显示舵机转速偏差 (dev μs) 和当前槽位                     |
+| 滑块控制   | -300 ~ +300 μs 连续调节转速，拖拽实时响应               |
+| 步进微调   | ±1 / ±5 / ±10 / ±50 / ±100 μs 按钮                     |
+| 停转按钮   | 一键发送 1500μs 停止舵机                               |
+| 速度档位   | 预设寻零(100) / 正常(250) / 快速(400) μs               |
+| 归零       | 启动寻零流程，自动寻找 SW0                              |
 
 **API 接口**（`servo_debug_server.h`）：
 
 | 方法   | 路径              | 说明               | 请求体                |
 |--------|-------------------|--------------------|-----------------------|
 | GET    | `/servo-debug`    | 调试网页           | —                     |
-| GET    | `/api/servo/angle`| 获取当前角度和槽位 | —                     |
-| POST   | `/api/servo/angle`| 设置绝对角度       | `{"angle": 90}`       |
-| POST   | `/api/servo/zero` | 归零到槽位 0       | —                     |
+| GET    | `/api/servo/angle`| 获取当前偏差和槽位 | —                     |
+| POST   | `/api/servo/angle`| 设置转速偏差       | `{"dev": 250}`        |
+| POST   | `/api/servo/zero` | 启动寻零           | —                     |
 | POST   | `/api/servo/slot` | 转到指定槽位       | `{"slot": 3}`         |

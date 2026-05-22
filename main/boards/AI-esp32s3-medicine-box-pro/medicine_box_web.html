@@ -1,0 +1,759 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>智能药盒 · Web管理系统</title>
+<style>
+/* ===== CSS Reset & Base ===== */
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+    --white:#ffffff;--bg:#f8fafb;
+    --blue-50:#e8f4fd;--blue-100:#cce6fa;--blue-200:#a5d4f5;--blue-300:#7abfee;
+    --blue-400:#4da8e0;--blue-500:#2b8fd1;--blue-600:#1a6fa8;
+    --text:#2c3e50;--text-light:#6b8299;--text-lighter:#9aafc4;
+    --line:#d6e5f0;--line-light:#e8f0f6;
+    --sidebar-w:220px;
+    --radius:8px;
+}
+html{font-size:15px;height:100%}
+body{
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei","Helvetica Neue",sans-serif;
+    background:var(--bg);color:var(--text);line-height:1.5;
+    min-height:100vh;display:flex;
+    -webkit-font-smoothing:antialiased;
+}
+
+/* ===== Sidebar ===== */
+.sidebar{
+    width:var(--sidebar-w);min-width:var(--sidebar-w);
+    background:var(--white);border-right:1px solid var(--line);
+    display:flex;flex-direction:column;padding:0;
+    position:fixed;top:0;left:0;bottom:0;z-index:10;
+}
+.sidebar-logo{
+    padding:28px 20px 20px;
+    border-bottom:1px solid var(--line-light);
+}
+.sidebar-logo .title{
+    font-size:1.15rem;font-weight:700;color:var(--blue-600);
+    letter-spacing:.5px;
+}
+.sidebar-logo .subtitle{
+    font-size:.7rem;color:var(--text-lighter);margin-top:4px;
+    letter-spacing:1px;
+}
+.sidebar-nav{flex:1;padding:10px 0}
+.sidebar-nav .nav-item{
+    display:flex;align-items:center;gap:10px;
+    padding:13px 22px;cursor:pointer;color:var(--text-light);
+    font-size:.88rem;font-weight:500;
+    border-left:3px solid transparent;
+    transition:background .15s,color .15s,border-color .15s;
+    user-select:none;
+}
+.sidebar-nav .nav-item:hover{background:var(--blue-50);color:var(--blue-600)}
+.sidebar-nav .nav-item.active{
+    background:var(--blue-50);color:var(--blue-600);
+    border-left-color:var(--blue-400);
+}
+.sidebar-nav .nav-item .nav-icon{
+    font-size:1.1rem;width:22px;text-align:center;flex-shrink:0;
+}
+.sidebar-footer{
+    padding:16px 20px;border-top:1px solid var(--line-light);
+    font-size:.7rem;color:var(--text-lighter);
+}
+.sidebar-footer .led-indicator{
+    display:flex;align-items:center;gap:6px;margin-top:6px;
+}
+.led-dot{
+    width:10px;height:10px;border-radius:50%;background:#c0cdd8;
+    transition:background .3s;
+}
+.led-dot.on{background:#4caf50;box-shadow:0 0 6px rgba(76,175,80,.5)}
+.led-dot.warn{background:#ff9800;box-shadow:0 0 6px rgba(255,152,0,.5)}
+
+/* ===== Main Content ===== */
+.main{
+    margin-left:var(--sidebar-w);flex:1;min-height:100vh;
+    display:flex;flex-direction:column;
+}
+
+/* ===== Module Panel ===== */
+.module{display:none;flex:1;padding:32px 40px}
+.module.active{display:flex;flex-direction:column}
+
+.module-header{margin-bottom:28px}
+.module-header h2{
+    font-size:1.35rem;font-weight:700;color:var(--text);
+}
+.module-header p{font-size:.82rem;color:var(--text-light);margin-top:4px}
+.module-divider{
+    border:none;border-top:1px solid var(--line);
+    margin-bottom:24px;
+}
+
+/* ===== Module 1: Medicine Quantity ===== */
+.med-list{max-width:680px}
+.med-row{
+    display:flex;align-items:center;gap:0;
+    border-bottom:1px solid var(--line-light);
+    padding:6px 0;
+    transition:border-color .15s;
+}
+.med-row:first-child{border-top:1px solid var(--line-light)}
+.med-row:focus-within{border-bottom-color:var(--blue-300)}
+.med-row .prefix{
+    font-size:1rem;color:var(--text-light);font-weight:400;
+    padding:8px 2px;white-space:nowrap;flex-shrink:0;
+}
+.med-row input.med-count{
+    width:44px;border:none;outline:none;font-size:1rem;text-align:center;
+    padding:8px 2px;background:transparent;color:var(--text);
+    font-family:inherit;
+}
+.med-row input.med-name{
+    flex:1;border:none;outline:none;font-size:1rem;padding:8px 4px;
+    background:transparent;color:var(--text);font-family:inherit;
+    min-width:100px;
+}
+.med-row input.med-name::placeholder{color:var(--text-lighter)}
+.med-row .suffix{
+    font-size:1rem;color:var(--text-light);padding:8px 2px;
+    white-space:nowrap;flex-shrink:0;
+}
+.med-row .sep{
+    color:var(--line);padding:8px 6px;font-size:1rem;
+}
+.med-add{
+    display:inline-flex;align-items:center;gap:6px;
+    margin-top:14px;padding:8px 16px;
+    background:transparent;border:1px dashed var(--blue-300);
+    border-radius:var(--radius);color:var(--blue-500);
+    font-size:.82rem;cursor:pointer;font-family:inherit;
+    transition:border-color .15s,background .15s;
+}
+.med-add:hover{background:var(--blue-50);border-color:var(--blue-400)}
+
+/* ===== Module 2: Weekly Schedule Table ===== */
+.schedule-wrap{max-width:800px}
+.schedule-table{
+    width:100%;border-collapse:collapse;
+    table-layout:fixed;
+}
+.schedule-table th,
+.schedule-table td{
+    border:1px solid var(--line);
+    text-align:center;vertical-align:middle;
+}
+.schedule-table th{
+    padding:14px 8px;font-size:.82rem;font-weight:600;
+    color:var(--text-light);background:var(--blue-50);
+}
+.schedule-table .corner{background:var(--white);border:none}
+.schedule-table .day-label{
+    font-weight:600;color:var(--blue-600);
+    background:var(--blue-50);
+    width:70px;
+}
+.schedule-table .day-label.today{
+    background:var(--blue-100);color:var(--blue-600);
+}
+.schedule-table td input{
+    width:100%;border:none;outline:none;text-align:center;
+    padding:12px 6px;font-size:.9rem;background:transparent;
+    color:var(--text);font-family:inherit;
+    transition:background .15s;
+}
+.schedule-table td input:focus{
+    background:var(--blue-50);
+}
+.schedule-table td input::placeholder{color:var(--text-lighter);font-size:.78rem}
+.schedule-table tbody tr:hover td{background:#fafcfd}
+
+.schedule-hint{
+    margin-top:12px;font-size:.75rem;color:var(--text-lighter);
+    display:flex;align-items:center;gap:6px;
+}
+
+/* ===== Module 3: Reminder Status ===== */
+.reminder-panel{max-width:720px;display:flex;flex-direction:column;gap:20px}
+
+.status-card{
+    background:var(--white);border:1px solid var(--line);border-radius:var(--radius);
+    padding:20px 24px;
+}
+.status-card h3{
+    font-size:.95rem;font-weight:600;color:var(--text);
+    margin-bottom:14px;padding-bottom:10px;
+    border-bottom:1px solid var(--line-light);
+}
+.status-row{
+    display:flex;align-items:center;justify-content:space-between;
+    padding:8px 0;font-size:.85rem;
+}
+.status-row .label{color:var(--text-light)}
+.status-row .value{font-weight:500}
+.status-row .value.green{color:#4caf50}
+.status-row .value.blue{color:var(--blue-500)}
+
+.current-time{
+    font-size:2rem;font-weight:700;color:var(--blue-600);
+    text-align:center;padding:16px 0;
+}
+.current-date{
+    font-size:.82rem;color:var(--text-light);
+    text-align:center;margin-top:-12px;margin-bottom:8px;
+}
+
+.reminder-list{list-style:none}
+.reminder-item{
+    display:flex;align-items:center;gap:12px;
+    padding:10px 0;border-bottom:1px solid var(--line-light);
+    font-size:.85rem;
+}
+.reminder-item:last-child{border-bottom:none}
+.reminder-item .r-time{
+    font-weight:600;color:var(--blue-500);min-width:48px;
+}
+.reminder-item .r-name{flex:1}
+.reminder-item .r-badge{
+    font-size:.7rem;padding:2px 8px;border-radius:12px;
+    background:var(--blue-50);color:var(--blue-500);
+}
+.reminder-item .r-badge.upcoming{background:#fff3e0;color:#ff9800}
+.reminder-item .r-badge.done{background:#e8f5e9;color:#4caf50}
+
+.empty-note{
+    text-align:center;color:var(--text-lighter);font-size:.85rem;
+    padding:30px 0;
+}
+
+/* Connection bar */
+.conn-section{
+    display:flex;align-items:center;gap:10px;
+    flex-wrap:wrap;
+}
+.conn-section input{
+    flex:1;min-width:160px;border:1px solid var(--line);border-radius:var(--radius);
+    padding:8px 12px;font-size:.85rem;outline:none;font-family:inherit;
+    transition:border-color .15s;
+}
+.conn-section input:focus{border-color:var(--blue-300)}
+.conn-section button{
+    padding:8px 18px;background:var(--blue-500);color:#fff;
+    border:none;border-radius:var(--radius);font-size:.82rem;
+    cursor:pointer;font-family:inherit;white-space:nowrap;
+    transition:background .15s;
+}
+.conn-section button:hover{background:var(--blue-600)}
+.conn-section .status-tag{
+    font-size:.75rem;padding:4px 10px;border-radius:12px;
+}
+.conn-section .status-tag.ok{background:#e8f5e9;color:#4caf50}
+.conn-section .status-tag.err{background:#ffebee;color:#e57373}
+
+/* ===== Responsive ===== */
+@media(max-width:768px){
+    :root{--sidebar-w:160px}
+    .module{padding:20px}
+    .schedule-table th,.schedule-table td{padding:8px 4px;font-size:.75rem}
+    .schedule-table td input{font-size:.78rem;padding:8px 4px}
+}
+@media(max-width:480px){
+    body{flex-direction:column}
+    .sidebar{
+        position:relative;width:100%;min-width:100%;
+        flex-direction:row;align-items:center;padding:0;
+        border-right:none;border-bottom:1px solid var(--line);
+    }
+    .sidebar-logo{padding:10px 14px;border-bottom:none}
+    .sidebar-logo .subtitle{display:none}
+    .sidebar-nav{display:flex;padding:0;overflow-x:auto}
+    .sidebar-nav .nav-item{
+        padding:10px 14px;border-left:none;
+        border-bottom:2px solid transparent;white-space:nowrap;
+        font-size:.78rem;
+    }
+    .sidebar-nav .nav-item.active{border-left:none;border-bottom-color:var(--blue-400)}
+    .sidebar-footer{display:none}
+    .main{margin-left:0}
+    .module{padding:14px}
+    .schedule-table th,.schedule-table td{padding:6px 2px;font-size:.7rem}
+    .schedule-table td input{font-size:.7rem;padding:6px 2px}
+}
+</style>
+</head>
+<body>
+
+<!-- ===== Sidebar ===== -->
+<aside class="sidebar">
+    <div class="sidebar-logo">
+        <div class="title">智能药盒</div>
+        <div class="subtitle">WEB MANAGEMENT</div>
+    </div>
+    <nav class="sidebar-nav">
+        <div class="nav-item active" data-module="med-quantity">
+            <span class="nav-icon">💊</span> 药品数量
+        </div>
+        <div class="nav-item" data-module="med-schedule">
+            <span class="nav-icon">⏰</span> 用药时间
+        </div>
+        <div class="nav-item" data-module="med-reminder">
+            <span class="nav-icon">🔔</span> 用药提醒
+        </div>
+    </nav>
+    <div class="sidebar-footer">
+        智能药盒管理系统
+        <div class="led-indicator">
+            <span class="led-dot" id="ledIndicator" title="引脚4 LED状态"></span>
+            <span id="ledLabel">GPIO4 待机</span>
+        </div>
+    </div>
+</aside>
+
+<!-- ===== Main Content ===== -->
+<main class="main">
+
+    <!-- Module 1: Medicine Quantity -->
+    <section class="module active" id="mod-quantity">
+        <div class="module-header">
+            <h2>药品数量</h2>
+            <p>记录每种药品的剩余数量，直接点击文本编辑</p>
+        </div>
+        <hr class="module-divider">
+        <div class="med-list" id="medList">
+            <!-- Dynamic rows -->
+        </div>
+        <button class="med-add" onclick="addMedRow()">+ 添加药品</button>
+    </section>
+
+    <!-- Module 2: Weekly Schedule -->
+    <section class="module" id="mod-schedule">
+        <div class="module-header">
+            <h2>用药时间</h2>
+            <p>设定每周用药计划 · 到达用药时间时引脚4 LED将亮起</p>
+        </div>
+        <hr class="module-divider">
+        <div class="schedule-wrap">
+            <table class="schedule-table">
+                <thead>
+                    <tr>
+                        <th class="corner"></th>
+                        <th>早</th>
+                        <th>中</th>
+                        <th>晚</th>
+                    </tr>
+                </thead>
+                <tbody id="scheduleBody">
+                    <!-- Dynamic rows -->
+                </tbody>
+            </table>
+            <div class="schedule-hint">
+                <span class="led-dot" id="scheduleLed" style="width:8px;height:8px;"></span>
+                引脚4 LED状态：<span id="scheduleLedLabel">待机</span>
+            </div>
+        </div>
+    </section>
+
+    <!-- Module 3: Reminder Status -->
+    <section class="module" id="mod-reminder">
+        <div class="module-header">
+            <h2>用药提醒</h2>
+            <p>今日用药提醒状态与设备连接</p>
+        </div>
+        <hr class="module-divider">
+        <div class="reminder-panel">
+
+            <!-- Current Time Card -->
+            <div class="status-card">
+                <h3>当前时间</h3>
+                <div class="current-time" id="currentTime">--:--:--</div>
+                <div class="current-date" id="currentDate">----年--月--日 星期-</div>
+            </div>
+
+            <!-- Today's Reminders -->
+            <div class="status-card">
+                <h3>今日提醒</h3>
+                <ul class="reminder-list" id="reminderList">
+                    <li class="empty-note">请先在「用药时间」中设定用药计划</li>
+                </ul>
+            </div>
+
+            <!-- Device Connection -->
+            <div class="status-card">
+                <h3>设备连接</h3>
+                <div class="conn-section">
+                    <input type="text" id="deviceIp" placeholder="输入设备IP地址，例如 192.168.1.100">
+                    <button onclick="testConnection()">连接设备</button>
+                </div>
+                <div class="status-row" style="margin-top:12px">
+                    <span class="label">连接状态</span>
+                    <span class="status-tag" id="connTag">未连接</span>
+                </div>
+                <div class="status-row">
+                    <span class="label">GPIO4 LED</span>
+                    <span class="value" id="gpioStatus">待机</span>
+                </div>
+            </div>
+
+        </div>
+    </section>
+
+</main>
+
+<script>
+// ===== Data Store =====
+const STORE_KEY_MED = 'medbox_quantities';
+const STORE_KEY_SCHED = 'medbox_schedule';
+const STORE_KEY_IP = 'medbox_device_ip';
+
+let medicineList = [];     // [{count: '', name: ''}, ...]
+let scheduleData = {};     // { '周一': { morning: '', noon: '', evening: '' }, ... }
+let deviceBaseUrl = '';
+
+// ===== Navigation =====
+document.querySelectorAll('.nav-item').forEach(item => {
+    item.addEventListener('click', function() {
+        document.querySelectorAll('.nav-item').forEach(i => i.classList.remove('active'));
+        this.classList.add('active');
+        const target = this.dataset.module;
+        document.querySelectorAll('.module').forEach(m => m.classList.remove('active'));
+        if (target === 'med-quantity') {
+            document.getElementById('mod-quantity').classList.add('active');
+        } else if (target === 'med-schedule') {
+            document.getElementById('mod-schedule').classList.add('active');
+            renderSchedule();
+        } else if (target === 'med-reminder') {
+            document.getElementById('mod-reminder').classList.add('active');
+            updateReminderPanel();
+        }
+    });
+});
+
+// ===== Module 1: Medicine Quantity =====
+function loadMedicines() {
+    try {
+        const raw = localStorage.getItem(STORE_KEY_MED);
+        if (raw) medicineList = JSON.parse(raw);
+    } catch(e) { medicineList = []; }
+    if (medicineList.length === 0) {
+        medicineList = [
+            { count: '', name: '' },
+            { count: '', name: '' },
+            { count: '', name: '' }
+        ];
+    }
+}
+function saveMedicines() {
+    localStorage.setItem(STORE_KEY_MED, JSON.stringify(medicineList));
+}
+
+function renderMedicineList() {
+    const container = document.getElementById('medList');
+    let html = '';
+    medicineList.forEach((item, idx) => {
+        html += `
+        <div class="med-row">
+            <span class="prefix">有</span>
+            <input type="text" class="med-count" value="${escAttr(item.count)}"
+                   placeholder="0" data-idx="${idx}" data-field="count"
+                   oninput="onMedChange(${idx},'count',this.value)" inputmode="numeric">
+            <span class="suffix">颗</span>
+            <input type="text" class="med-name" value="${escAttr(item.name)}"
+                   placeholder="药品名称" data-idx="${idx}" data-field="name"
+                   oninput="onMedChange(${idx},'name',this.value)">
+        </div>`;
+    });
+    container.innerHTML = html;
+}
+
+function onMedChange(idx, field, value) {
+    if (idx >= 0 && idx < medicineList.length) {
+        medicineList[idx][field] = value;
+        saveMedicines();
+    }
+}
+
+function addMedRow() {
+    medicineList.push({ count: '', name: '' });
+    saveMedicines();
+    renderMedicineList();
+    // Focus the new row's name input
+    const inputs = document.querySelectorAll('#medList .med-name');
+    if (inputs.length) inputs[inputs.length - 1].focus();
+}
+
+// ===== Module 2: Weekly Schedule =====
+const DAYS = ['周一','周二','周三','周四','周五','周六','周日'];
+const PERIODS = ['早','中','晚'];
+const PERIOD_KEYS = ['morning','noon','evening'];
+const SCHEDULE_CELLS = [
+    {day:0, period:0, time:'08:00'}, {day:0, period:1, time:'12:00'}, {day:0, period:2, time:'18:00'},
+    {day:1, period:0, time:'08:00'}, {day:1, period:1, time:'12:00'}, {day:1, period:2, time:'18:00'},
+    {day:2, period:0, time:'08:00'}, {day:2, period:1, time:'12:00'}, {day:2, period:2, time:'18:00'},
+    {day:3, period:0, time:'08:00'}, {day:3, period:1, time:'12:00'}, {day:3, period:2, time:'18:00'},
+    {day:4, period:0, time:'08:00'}, {day:4, period:1, time:'12:00'}, {day:4, period:2, time:'18:00'},
+    {day:5, period:0, time:'08:00'}, {day:5, period:1, time:'12:00'}, {day:5, period:2, time:'18:00'},
+    {day:6, period:0, time:'08:00'}, {day:6, period:1, time:'12:00'}, {day:6, period:2, time:'18:00'},
+];
+
+function loadSchedule() {
+    try {
+        const raw = localStorage.getItem(STORE_KEY_SCHED);
+        if (raw) scheduleData = JSON.parse(raw);
+    } catch(e) { scheduleData = {}; }
+    // Initialize empty structure
+    DAYS.forEach(day => {
+        if (!scheduleData[day]) {
+            scheduleData[day] = { morning: '', noon: '', evening: '' };
+        }
+    });
+}
+function saveSchedule() {
+    localStorage.setItem(STORE_KEY_SCHED, JSON.stringify(scheduleData));
+}
+
+function onScheduleChange(day, periodKey, value) {
+    if (scheduleData[day]) {
+        scheduleData[day][periodKey] = value;
+        saveSchedule();
+    }
+}
+
+function renderSchedule() {
+    const tbody = document.getElementById('scheduleBody');
+    const todayName = getTodayDayName();
+    let html = '';
+    DAYS.forEach((day, di) => {
+        const isToday = (day === todayName);
+        html += '<tr>';
+        html += `<td class="day-label${isToday ? ' today' : ''}">${day}${isToday ? ' · 今日' : ''}</td>`;
+        PERIOD_KEYS.forEach(pk => {
+            const val = (scheduleData[day] && scheduleData[day][pk]) || '';
+            html += `<td><input type="text" value="${escAttr(val)}"
+                        placeholder="药品 颗数" data-day="${day}" data-period="${pk}"
+                        oninput="onScheduleChange('${day}','${pk}',this.value)"></td>`;
+        });
+        html += '</tr>';
+    });
+    tbody.innerHTML = html;
+}
+
+// ===== Module 3: Reminder Status =====
+function updateReminderPanel() {
+    updateClock();
+    renderReminderList();
+    loadDeviceIp();
+}
+
+function updateClock() {
+    const now = new Date();
+    const timeStr = now.toLocaleTimeString('zh-CN', {hour12: false});
+    const dayNames = ['日','一','二','三','四','五','六'];
+    const dateStr = `${now.getFullYear()}年${String(now.getMonth()+1).padStart(2,'0')}月${String(now.getDate()).padStart(2,'0')}日 星期${dayNames[now.getDay()]}`;
+    const timeEl = document.getElementById('currentTime');
+    const dateEl = document.getElementById('currentDate');
+    if (timeEl) timeEl.textContent = timeStr;
+    if (dateEl) dateEl.textContent = dateStr;
+}
+
+function getTodayDayName() {
+    const dayNames = ['周日','周一','周二','周三','周四','周五','周六'];
+    return dayNames[new Date().getDay()];
+}
+
+function renderReminderList() {
+    const container = document.getElementById('reminderList');
+    if (!container) return;
+
+    const todayName = getTodayDayName();
+    const todaySchedule = scheduleData[todayName];
+    if (!todaySchedule) {
+        container.innerHTML = '<li class="empty-note">请先在「用药时间」中设定用药计划</li>';
+        return;
+    }
+
+    const now = new Date();
+    const currentMinutes = now.getHours() * 60 + now.getMinutes();
+
+    let items = [];
+    const periodTimeMap = {
+        morning: { label: '早', minutes: 8 * 60 },    // 08:00
+        noon:    { label: '中', minutes: 12 * 60 },   // 12:00
+        evening: { label: '晚', minutes: 18 * 60 }    // 18:00
+    };
+
+    PERIOD_KEYS.forEach(pk => {
+        const val = todaySchedule[pk];
+        if (val && val.trim()) {
+            const pt = periodTimeMap[pk];
+            items.push({
+                period: pt.label,
+                time: pt.minutes,
+                timeStr: String(Math.floor(pt.minutes/60)).padStart(2,'0') + ':' +
+                         String(pt.minutes%60).padStart(2,'0'),
+                content: val,
+                done: currentMinutes >= pt.minutes + 30  // 30min grace
+            });
+        }
+    });
+
+    if (items.length === 0) {
+        container.innerHTML = '<li class="empty-note">今日无用药计划</li>';
+        return;
+    }
+
+    items.sort((a,b) => a.time - b.time);
+
+    let html = '';
+    items.forEach(item => {
+        let badgeClass = '';
+        let badgeText = '';
+        if (item.done) {
+            badgeClass = 'done';
+            badgeText = '已完成';
+        } else if (currentMinutes >= item.time) {
+            badgeClass = 'upcoming';
+            badgeText = '进行中';
+        } else {
+            badgeClass = '';
+            badgeText = '待提醒';
+        }
+        html += `
+        <li class="reminder-item">
+            <span class="r-time">${item.timeStr}</span>
+            <span class="r-name">${escHtml(item.content)} · ${item.period}间</span>
+            <span class="r-badge ${badgeClass}">${badgeText}</span>
+        </li>`;
+    });
+    container.innerHTML = html;
+}
+
+// ===== GPIO4 LED Simulation =====
+function checkMedicationTime() {
+    const todayName = getTodayDayName();
+    const todaySchedule = scheduleData[todayName];
+    if (!todaySchedule) { setLedState('off'); return; }
+
+    const now = new Date();
+    const currentMinutes = now.getHours() * 60 + now.getMinutes();
+
+    const periodTimeMap = {
+        morning: 8 * 60,
+        noon: 12 * 60,
+        evening: 18 * 60
+    };
+
+    let ledOn = false;
+    PERIOD_KEYS.forEach(pk => {
+        const val = todaySchedule[pk];
+        if (val && val.trim()) {
+            const targetTime = periodTimeMap[pk];
+            // LED on when within the 30-minute window starting at medication time
+            if (currentMinutes >= targetTime && currentMinutes <= targetTime + 30) {
+                ledOn = true;
+            }
+        }
+    });
+
+    setLedState(ledOn ? 'on' : 'off');
+}
+
+function setLedState(state) {
+    const indicator = document.getElementById('ledIndicator');
+    const label = document.getElementById('ledLabel');
+    const sLed = document.getElementById('scheduleLed');
+    const sLabel = document.getElementById('scheduleLedLabel');
+    const gpioStatus = document.getElementById('gpioStatus');
+
+    if (indicator) {
+        indicator.className = 'led-dot ' + (state === 'on' ? 'on' : (state === 'warn' ? 'warn' : ''));
+    }
+    if (label) {
+        label.textContent = state === 'on' ? 'GPIO4 提醒中' : (state === 'warn' ? 'GPIO4 即将提醒' : 'GPIO4 待机');
+    }
+    if (sLed) {
+        sLed.className = 'led-dot ' + (state === 'on' ? 'on' : '');
+    }
+    if (sLabel) {
+        sLabel.textContent = state === 'on' ? '提醒中 - LED亮起' : '待机';
+    }
+    if (gpioStatus) {
+        gpioStatus.textContent = state === 'on' ? '提醒中 · LED亮起' : '待机';
+        gpioStatus.className = 'value ' + (state === 'on' ? 'green' : '');
+    }
+}
+
+// ===== Device Connection =====
+function loadDeviceIp() {
+    const ip = localStorage.getItem(STORE_KEY_IP);
+    const ipInput = document.getElementById('deviceIp');
+    if (ip && ipInput) ipInput.value = ip;
+}
+
+async function testConnection() {
+    const ipInput = document.getElementById('deviceIp');
+    const ip = ipInput.value.trim();
+    const tag = document.getElementById('connTag');
+    if (!ip) {
+        tag.textContent = '请输入IP';
+        tag.className = 'status-tag err';
+        return;
+    }
+    localStorage.setItem(STORE_KEY_IP, ip);
+    deviceBaseUrl = `http://${ip}`;
+    tag.textContent = '连接中…';
+    tag.className = 'status-tag';
+    try {
+        const resp = await fetch(`${deviceBaseUrl}/api/health`, {
+            signal: AbortSignal.timeout(3000)
+        });
+        if (resp.ok) {
+            tag.textContent = '已连接';
+            tag.className = 'status-tag ok';
+        } else {
+            throw new Error('not ok');
+        }
+    } catch(e) {
+        tag.textContent = '连接失败';
+        tag.className = 'status-tag err';
+    }
+}
+
+// ===== Helpers =====
+function escAttr(str) {
+    return String(str).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+function escHtml(str) {
+    const div = document.createElement('div');
+    div.textContent = str;
+    return div.innerHTML;
+}
+
+// ===== Init =====
+function init() {
+    loadMedicines();
+    renderMedicineList();
+
+    loadSchedule();
+    renderSchedule();
+
+    updateClock();
+    checkMedicationTime();
+
+    // Update clock and LED check every 30 seconds
+    setInterval(() => {
+        updateClock();
+        checkMedicationTime();
+    }, 30000);
+
+    // Immediate check
+    checkMedicationTime();
+}
+
+document.addEventListener('DOMContentLoaded', init);
+</script>
+</body>
+</html>

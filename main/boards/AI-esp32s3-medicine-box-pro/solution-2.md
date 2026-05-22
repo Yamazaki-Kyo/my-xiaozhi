@@ -12,10 +12,11 @@
 │   云端 TTS 音频 ←── I2S ←── Opus 解码 ←── WiFi ←── 云端 LLM   │
 │   MAX98357A 功放 ──→ 喇叭                                     │
 │                                                              │
-│   SPI LCD 240x320 ──→ LVGL 显示 (状态/对话/健康数据)           │
+│   SPI LCD 240x240 ──→ LVGL 显示 (状态/对话/用药提醒)           │
 │   MAX30102 ──→ I2C ──→ 心率血氧 PPG 算法                      │
-│   180° 舵机 ──→ LEDC PWM ──→ 8 槽药品转盘 (1 logo + 7 药)     │
-│   GPIO48 LED / GPIO0 按键                                     │
+│   360° 舵机 ──→ LEDC PWM ──→ 8 槽药品转盘 (1 logo + 7 药)     │
+│   SW0/SW1 微动开关 ──→ 转盘定位 (双开关闭环计数)                │
+│   GPIO48 LED / GPIO10 静音键 / GPIO0 按键 / GPIO3 调度 LED      │
 │                                                              │
 │   ┌─────────────────────────────────────────┐                │
 │   │ EspClawBridge (UART1 GPIO8/9 @115200)   │                │
@@ -80,8 +81,8 @@ Claw → XiaoZhi:  {"src":"claw","type":"hb_ack"}
 | 唤醒词检测         | `{"src":"xiaozhi","type":"event","event":"wake_word"}`                                           | "你好小智" 唤醒                |
 | 按键事件           | `{"src":"xiaozhi","type":"event","event":"button","btn":"boot","action":"click"}`                | GPIO0 按下                     |
 | 健康检测完成       | `{"src":"xiaozhi","type":"event","event":"health_result","hr":78,"spo2":98,"quality":0.95}`      | MAX30102 测量结束              |
-| 舵机到位           | `{"src":"xiaozhi","type":"event","event":"servo_done","slot":3}`                                | 转盘旋转到位（PWM 角度锁定）   |
-| 取药确认           | `{"src":"xiaozhi","type":"event","event":"pill_taken","slot":3}`                                | 用户按键确认取药               |
+| 舵机到位           | `{"src":"xiaozhi","type":"event","event":"servo_done","slot":3}`                                | 转盘旋转到位 (SW1 计数到达目标) |
+| 取药确认/提醒关闭  | `{"src":"xiaozhi","type":"event","event":"pill_taken","slot":3}`                                | 用户按 GPIO10 确认取药, 转盘归零 |
 | 人脸检测（已注册） | `{"src":"xiaozhi","type":"event","event":"vision","vision_type":"face","person":"张三","confidence":0.92}`  | K230D 识别到已注册人脸 |
 | 人脸检测（陌生人） | `{"src":"xiaozhi","type":"event","event":"vision","vision_type":"face","person":"unknown","confidence":0.85}` | K230D 检测到未注册人脸 |
 
@@ -91,8 +92,8 @@ Claw → XiaoZhi:  {"src":"claw","type":"hb_ack"}
 |------------|-----------------------------------------------------------------------------------------|----------------------------|
 | 语音播报   | `{"src":"claw","type":"cmd","cmd":"speak","text":"该吃药了..."}`                        | 触发本地 TTS 播报          |
 | 屏幕显示   | `{"src":"claw","type":"cmd","cmd":"display","message":"降压药 2颗\n槽位: 1"}`           | LCD 显示消息               |
-| 出药       | `{"src":"claw","type":"cmd","cmd":"dispense","slot":3}`                                 | 180° 舵机指定角度旋转至槽位 3 |
-| 闭口       | `{"src":"claw","type":"cmd","cmd":"close"}`                                             | 舵机归位至槽位0（logo 展示位） |
+| 出药       | `{"src":"claw","type":"cmd","cmd":"dispense","slot":3}`                                 | 360° 舵机转盘转至槽位 3 (SW1 计数定位) |
+| 闭口       | `{"src":"claw","type":"cmd","cmd":"close"}`                                             | 转盘 goHome() 归零至槽位 0 (寻 SW0) |
 | 健康检测   | `{"src":"claw","type":"cmd","cmd":"health_check"}`                                      | 启动心率血氧检测           |
 | LED 控制   | `{"src":"claw","type":"cmd","cmd":"led","state":"blink","duration_ms":5000}`            | LED 闪烁 5 秒              |
 

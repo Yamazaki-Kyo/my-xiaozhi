@@ -59,15 +59,18 @@
 │   云端 TTS 音频 ←── I2S ←── Opus 解码 ←── WiFi ←── 云端 LLM   │
 │   MAX98357A 功放 ──→ 喇叭                                     │
 │                                                              │
-│   SPI LCD 240x320 ──→ LVGL 显示 (状态/对话/健康数据)           │
+│   SPI LCD 240x240 ──→ LVGL 显示 (状态/对话/用药提醒)           │
 │   MAX30102 ──→ I2C ──→ 心率血氧 PPG 算法                      │
-│   180° 舵机 ──→ LEDC PWM ──→ 8 槽药品转盘 (1 logo + 7 药)         │
-│   GPIO48 LED / GPIO0 按键                                     │
+│   360° 舵机 ──→ LEDC PWM ──→ 8 槽药品转盘 (1 logo + 7 药)        │
+│   SW0/SW1 微动开关 ──→ 转盘定位 (双开关闭环计数)                │
+│   GPIO48 LED / GPIO10 静音键 / GPIO0 按键 / GPIO3 调度 LED      │
 │                                                              │
 │   ┌──────────────────────────────────────────┐               │
-│   │ MedicineReminder (NVS 数据权威)            │               │
-│   │ HTTP Server (Web 配置页)                   │               │
+│   │ MedicineConfigServer (NVS 数据权威)        │               │
+│   │ HTTP Server (3 个 Web 配置页)              │               │
 │   │ WxPusher 微信推送 (HTTP GET)               │               │
+│   │ SchedulerServer (定时调度, LED 控制)       │               │
+│   │ PillBoxTurntable (转盘控制, 双开关定位)    │               │
 │   └──────────────────────────────────────────┘               │
 │                                                              │
 │   ┌──────────────────────────────────────────┐               │
@@ -121,10 +124,11 @@
 │   云端 TTS 音频 ←── I2S ←── Opus 解码 ←── WiFi ←── 云端 LLM   │
 │   MAX98357A 功放 ──→ 喇叭                                     │
 │                                                              │
-│   SPI LCD 240x320 ──→ LVGL 显示 (状态/对话/健康数据)           │
+│   SPI LCD 240x240 ──→ LVGL 显示 (状态/对话/用药提醒)           │
 │   MAX30102 ──→ I2C ──→ 心率血氧 PPG 算法                      │
-│   180° 舵机 ──→ LEDC PWM ──→ 8 槽药品转盘 (1 logo + 7 药)         │
-│   GPIO48 LED / GPIO0 按键                                     │
+│   360° 舵机 ──→ LEDC PWM ──→ 8 槽药品转盘 (1 logo + 7 药)        │
+│   SW0/SW1 微动开关 ──→ 转盘定位 (双开关闭环计数)                │
+│   GPIO48 LED / GPIO10 静音键 / GPIO0 按键 / GPIO3 调度 LED      │
 │                                                              │
 │   ┌─────────────────────────────────────────┐                │
 │   │ EspClawBridge (UART1 GPIO8/9 @115200)   │                │

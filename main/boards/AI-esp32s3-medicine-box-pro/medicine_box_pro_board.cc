@@ -13,7 +13,9 @@
 #include "servo_debug_server.h"
 #include "scheduler_server.h"
 #include "medicine_config_server.h"
+#include "pillbox_turntable.h"
 #include "medicine_box_display.h"
+#include "max30102.h"
 #include "assets/lang_config.h"
 
 #include <esp_http_server.h>
@@ -84,9 +86,11 @@ static void PushConversationTask(void* arg) {
 class MedicineBoxProBoard : public WifiBoard {
 private:
     Button boot_button_;
+    Button med_dismiss_button_;
     MedicineBoxDisplay* display_;
     WxPusherNotifier notifier_;
     MedicineDispenser* dispenser_ = nullptr;
+    PillBoxTurntable* turntable_ = nullptr;
     ServoDebugServer* servo_debug_server_ = nullptr;
     SchedulerServer* scheduler_server_ = nullptr;
     MedicineConfigServer* medicine_config_server_ = nullptr;
@@ -94,9 +98,31 @@ private:
     esp_timer_handle_t med_check_timer_ = nullptr;
     esp_timer_handle_t ip_poll_timer_ = nullptr;
     esp_timer_handle_t display_refresh_timer_ = nullptr;
+    esp_timer_handle_t voice_loop_timer_ = nullptr;
     int http_retry_count_ = 0;
     std::string last_push_status_;
     std::mutex status_mutex_;
+
+    // ---- MAX30102 健康检测 ----
+    MAX30102* max30102_ = nullptr;
+    TaskHandle_t health_measure_task_ = nullptr;
+    esp_timer_handle_t health_ui_timer_ = nullptr;
+    esp_timer_handle_t health_dismiss_timer_ = nullptr;
+    bool health_measuring_ = false;
+    int health_elapsed_sec_ = 0;
+    bool reminder_active_ = false;
+
+    static constexpr int PPG_RING_SIZE = 600;
+    struct PpgRingEntry {
+        uint32_t red;
+        uint32_t ir;
+        bool valid;
+    };
+    PpgRingEntry ppg_ring_[PPG_RING_SIZE];
+    int ppg_ring_head_ = 0;
+    int ppg_ring_count_ = 0;
+    std::vector<uint32_t> all_red_;
+    std::vector<uint32_t> all_ir_;
 
     static void HttpServerRetryCallback(void* arg) {
         auto* self = (MedicineBoxProBoard*)arg;
@@ -168,6 +194,15 @@ private:
         }
     }
 
+    static void VoiceLoopCallback(void* arg) {
+        // 不能直接 PlaySound: PushPacketToDecodeQueue 会阻塞 ESP_TIMER_TASK
+        // 导致同任务的按钮轮询定时器停止响应，GPIO10 按钮失效
+        auto& app = Application::GetInstance();
+        app.Schedule([]() {
+            Application::GetInstance().PlaySound(Lang::Sounds::OGG_MED_REMINDER);
+        });
+    }
+
     static void DisplayRefreshCallback(void* arg) {
         auto* self = (MedicineBoxProBoard*)arg;
         if (!self->display_) return;
@@ -188,6 +223,178 @@ private:
             self->display_->SetMedPlan(
                 self->medicine_config_server_->GetPlanSummary());
         }
+    }
+
+    // ======== MAX30102 健康检测方法 ========
+
+    void StartHealthMeasurement() {
+        if (health_measuring_ || !max30102_) return;
+        ESP_LOGI(TAG, "启动健康检测...");
+
+        if (!max30102_->StartSampling()) {
+            ESP_LOGE(TAG, "MAX30102 启动采样失败");
+            return;
+        }
+
+        health_measuring_ = true;
+        health_elapsed_sec_ = 0;
+        ppg_ring_head_ = 0;
+        ppg_ring_count_ = 0;
+        all_red_.clear();
+        all_ir_.clear();
+        all_red_.reserve(6000);
+        all_ir_.reserve(6000);
+
+        if (display_) {
+            if (!display_->ShowHealthOverlay()) {
+                ESP_LOGE(TAG, "健康检测 UI 创建失败");
+                health_measuring_ = false;
+                max30102_->StopSampling();
+                return;
+            }
+            display_->ResetPpgBaseline();
+        }
+
+        xTaskCreatePinnedToCore(
+            HealthMeasureTask, "health_meas", 4096,
+            this, 5, &health_measure_task_, 0);
+
+        esp_timer_create_args_t ui_args = {};
+        ui_args.callback = HealthUITimerCallback;
+        ui_args.arg = this;
+        ui_args.dispatch_method = ESP_TIMER_TASK;
+        ui_args.name = "health_ui";
+        esp_timer_create(&ui_args, &health_ui_timer_);
+        esp_timer_start_periodic(health_ui_timer_, 16000);  // 16ms ≈ 60Hz
+    }
+
+    static void HealthMeasureTask(void* arg) {
+        auto* self = (MedicineBoxProBoard*)arg;
+        const int duration_sec = 60;
+        const int64_t start_ms = esp_timer_get_time() / 1000;
+
+        ESP_LOGI(TAG, "健康检测任务启动 (%ds)", duration_sec);
+
+        while (true) {
+            int64_t elapsed = (esp_timer_get_time() / 1000) - start_ms;
+            if (elapsed >= duration_sec * 1000) break;
+
+            self->health_elapsed_sec_ = (int)(elapsed / 1000);
+
+            // 排空 FIFO: 每次循环读完所有可用样本, 防止 FIFO 积压
+            int drained = 0;
+            MAX30102::PpgSample sample;
+            while (self->max30102_->ReadSample(sample) && drained < 32) {
+                auto& entry = self->ppg_ring_[self->ppg_ring_head_];
+                entry.red = sample.red;
+                entry.ir = sample.ir;
+                entry.valid = true;
+                self->ppg_ring_head_ = (self->ppg_ring_head_ + 1) % PPG_RING_SIZE;
+                if (self->ppg_ring_count_ < PPG_RING_SIZE) self->ppg_ring_count_++;
+
+                self->all_red_.push_back(sample.red);
+                self->all_ir_.push_back(sample.ir);
+                drained++;
+            }
+            vTaskDelay(pdMS_TO_TICKS(10));
+        }
+
+        self->max30102_->StopSampling();
+        ESP_LOGI(TAG, "健康检测采样结束, 共 %d 个样本", (int)self->all_red_.size());
+
+        // 计算最终结果
+        HealthResult result;
+        if (self->all_red_.size() >= 50) {
+            result = self->max30102_->ComputeResults(
+                self->all_red_.data(), self->all_ir_.data(),
+                (int)self->all_red_.size());
+        }
+
+        self->FinalizeHealthMeasurement(result);
+        self->health_measure_task_ = nullptr;
+        vTaskDelete(NULL);
+    }
+
+    static void HealthUITimerCallback(void* arg) {
+        auto* self = (MedicineBoxProBoard*)arg;
+        if (!self->health_measuring_ || !self->display_) return;
+
+        DisplayLockGuard lock(self->display_);
+
+        // 1. 画波形 (双通道: 左画布 IR 绿色心率, 右画布 RED 红色血氧)
+        int samples_to_read = (self->ppg_ring_count_ < 2) ? self->ppg_ring_count_ : 2;
+        if (samples_to_read > 0) {
+            uint32_t waveform_ir[5], waveform_red[5];
+            int read_pos = (self->ppg_ring_head_ - samples_to_read + PPG_RING_SIZE) % PPG_RING_SIZE;
+            for (int i = 0; i < samples_to_read; i++) {
+                waveform_ir[i]  = self->ppg_ring_[read_pos].ir;
+                waveform_red[i] = self->ppg_ring_[read_pos].red;
+                read_pos = (read_pos + 1) % PPG_RING_SIZE;
+            }
+            self->display_->UpdatePpgWaveform(waveform_ir, waveform_red, samples_to_read);
+        }
+
+        // 2. 每 2 秒更新滚动估值
+        static int64_t last_est_ms = 0;
+        int64_t now_ms = esp_timer_get_time() / 1000;
+        if (now_ms - last_est_ms > 2000) {
+            last_est_ms = now_ms;
+            self->max30102_->UpdateRollingEstimate();
+            int hr = self->max30102_->GetRollingHR();
+            int spo2 = self->max30102_->GetRollingSpO2();
+            self->display_->UpdateHealthReadings(hr, spo2);
+        }
+
+        // 3. 倒计时
+        char status[32];
+        int remaining = 60 - self->health_elapsed_sec_;
+        if (remaining < 0) remaining = 0;
+        snprintf(status, sizeof(status), "检测中... %d秒", remaining);
+        self->display_->UpdateHealthStatus(status);
+    }
+
+    void FinalizeHealthMeasurement(const HealthResult& result) {
+        health_measuring_ = false;
+
+        if (health_ui_timer_) {
+            esp_timer_stop(health_ui_timer_);
+            esp_timer_delete(health_ui_timer_);
+            health_ui_timer_ = nullptr;
+        }
+
+        if (display_) {
+            if (result.finger_detected && result.heart_rate > 0 && result.spo2 > 0) {
+                display_->UpdateHealthReadings(result.heart_rate, result.spo2);
+                display_->UpdateHealthStatus("检测完成");
+
+                // 语音播报
+                auto& app = Application::GetInstance();
+                char msg[64];
+                snprintf(msg, sizeof(msg), "最近一次测得血氧浓度为%d%%，心率为%d次/分",
+                         result.spo2, result.heart_rate);
+                app.Schedule([msg_str = std::string(msg)]() {
+                    Application::GetInstance().Alert("健康检测", msg_str.c_str(), "");
+                });
+            } else if (!result.finger_detected) {
+                display_->UpdateHealthStatus("未检测到手指，请重试");
+            } else {
+                display_->UpdateHealthStatus("信号质量不足，请重试");
+            }
+        }
+
+        // 8 秒后自动消失
+        esp_timer_create_args_t dis_args = {};
+        dis_args.callback = [](void* arg) {
+            auto* self = (MedicineBoxProBoard*)arg;
+            if (self->display_) {
+                self->display_->HideHealthOverlay();
+            }
+        };
+        dis_args.arg = this;
+        dis_args.dispatch_method = ESP_TIMER_TASK;
+        dis_args.name = "health_dis";
+        esp_timer_create(&dis_args, &health_dismiss_timer_);
+        esp_timer_start_once(health_dismiss_timer_, HEALTH_RESULT_DISPLAY_MS * 1000);
     }
 
     void InitializeSpi() {
@@ -257,11 +464,44 @@ private:
             }
             app.ToggleChatState();
         });
+
+        // GPIO10 静音按钮：停止用药提醒语音播报并清除屏幕提醒
+        med_dismiss_button_.OnClick([this]() {
+            // 停止语音循环定时器
+            if (voice_loop_timer_) {
+                esp_timer_stop(voice_loop_timer_);
+            }
+            auto& app = Application::GetInstance();
+            // 停止当前正在播放的 OGG 语音
+            app.GetAudioService().ResetDecoder();
+            // 清除屏幕 Alert 状态
+            app.DismissAlert();
+            // 清除 Display 通知文字
+            if (display_) {
+                display_->DismissNotification();
+            }
+            // 舵机归零：仅在用药提醒激活时归零，避免双击检测时误触
+            if (turntable_ && turntable_->isReady() && reminder_active_) {
+                turntable_->goHome();
+                reminder_active_ = false;
+            }
+            ESP_LOGI(TAG, "用药提醒已确认 (GPIO10 按钮)");
+        });
+
+        // GPIO10 双击：启动心率血氧健康检测
+        med_dismiss_button_.OnDoubleClick([this]() {
+            if (health_measuring_) {
+                ESP_LOGW(TAG, "健康检测已在进行中");
+                return;
+            }
+            StartHealthMeasurement();
+        });
     }
 
 public:
     MedicineBoxProBoard()
-        : boot_button_(BOOT_BUTTON_GPIO) {
+        : boot_button_(BOOT_BUTTON_GPIO),
+          med_dismiss_button_(MED_DISMISS_BUTTON_GPIO) {
         InitializeSpi();
         InitializeLcdDisplay();
         InitializeButtons();
@@ -269,6 +509,20 @@ public:
         // 360° 舵机调试模式 (无开机校准)
         dispenser_ = new MedicineDispenser(SERVO_PWM_PIN, GPIO_NUM_NC);
         ESP_LOGI(TAG, "舵机调试模式就绪 (PWM: GPIO12)");
+
+        // 药盘转盘控制 (双微动开关定位, 上电后自动寻零)
+        turntable_ = new PillBoxTurntable(dispenser_,
+                                          TURNTABLE_SW0_PIN,
+                                          TURNTABLE_SW1_PIN);
+        turntable_->init();  // 启动寻零 (非阻塞, 后台完成)
+
+        // 初始化 MAX30102 心率血氧传感器 (轻量预检 PART_ID)
+        max30102_ = new MAX30102();
+        if (!max30102_->Initialize()) {
+            ESP_LOGW(TAG, "MAX30102 未检测到, 健康检测功能禁用");
+            delete max30102_;
+            max30102_ = nullptr;
+        }
 
         // 舵机调试服务器对象 (稍后网络就绪时注册路由)
         servo_debug_server_ = new ServoDebugServer(dispenser_);
@@ -288,15 +542,34 @@ public:
         // 智能药盒用药配置 (稍后网络就绪时注册路由)
         medicine_config_server_ = new MedicineConfigServer();
 
-        // 用药提醒回调：到点时屏幕通知 + OGG 语音播报
-        medicine_config_server_->SetEventCallback([](const char* msg) {
+        // 用药提醒回调：到点时屏幕通知 + 大字剂量 + OGG 语音循环播报
+        medicine_config_server_->SetEventCallback([this](int slot, int dose, const char* msg) {
+            reminder_active_ = true;
+            // 舵机转至目标药槽
+            if (turntable_ && turntable_->isReady()) {
+                turntable_->goToSlot(slot);
+                ESP_LOGI(TAG, "用药提醒: 舵机转至槽%d", slot);
+            }
+            // 屏幕左侧大字显示服药数量
+            if (display_) {
+                display_->ShowDoseOverlay(slot, dose);
+            }
             auto& app = Application::GetInstance();
             std::string text(msg);
             app.Schedule([text]() {
                 Application::GetInstance().Alert("用药提醒", text.c_str(), "");
             });
-            // 播放预录制 OGG 吃药提醒语音
+            // 循环播放 OGG 语音 (~5.3秒)，直到按下 GPIO10 按钮停止
+            if (!voice_loop_timer_) {
+                esp_timer_create_args_t voice_args = {};
+                voice_args.callback = VoiceLoopCallback;
+                voice_args.arg = nullptr;
+                voice_args.dispatch_method = ESP_TIMER_TASK;
+                voice_args.name = "voice_loop";
+                esp_timer_create(&voice_args, &voice_loop_timer_);
+            }
             Application::GetInstance().PlaySound(Lang::Sounds::OGG_MED_REMINDER);
+            esp_timer_start_periodic(voice_loop_timer_, 5500000); // 5.5秒循环
         });
 
         // 用药提醒检查定时器 (每 30 秒)

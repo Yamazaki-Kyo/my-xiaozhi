@@ -53,10 +53,6 @@ body{
 }
 .topbar .logo{font-size:1.15rem;font-weight:700;color:var(--primary-dark);letter-spacing:.3px}
 .topbar .logo span{margin-right:6px}
-.led-box{display:flex;align-items:center;gap:8px;font-size:.82rem;color:var(--text-light);padding:4px 12px;border-radius:20px;background:var(--bg);border:1px solid var(--border)}
-.led-dot{width:10px;height:10px;border-radius:50%;background:#c0cdd8;transition:all .3s}
-.led-dot.on{background:var(--accent);box-shadow:0 0 8px rgba(109,170,126,.5);animation:ledPulse 1.2s infinite}
-@keyframes ledPulse{0%,100%{opacity:1}50%{opacity:.35}}
 
 /* ===== Main Content Area ===== */
 .main{flex:1;overflow-y:auto;overflow-x:hidden;min-height:0;padding:16px;padding-bottom:calc(var(--bottom-nav-h) + 86px);-webkit-overflow-scrolling:touch}
@@ -159,9 +155,9 @@ body{
 }
 .calendar-grid .day-header.weekend{color:var(--danger)}
 .cal-cell{
-  aspect-ratio:1;border:1px solid var(--border);border-radius:var(--radius-sm);
+  border:1px solid var(--border);border-radius:var(--radius-sm);
   padding:4px;cursor:pointer;transition:all .15s;display:flex;flex-direction:column;
-  align-items:center;background:var(--surface);min-width:0;overflow:hidden;
+  align-items:stretch;background:var(--surface);min-width:0;overflow:hidden;min-height:64px;
 }
 .cal-cell:active{transform:scale(.95);background:var(--primary-light)}
 .cal-cell:hover{border-color:var(--primary)}
@@ -182,6 +178,20 @@ body{
 .dot-s1{background:#e07b7b}.dot-s2{background:#6daa7e}.dot-s3{background:#2b8fd1}
 .dot-s4{background:#ff9800}.dot-s5{background:#9b59b6}.dot-s6{background:#1abc9c}
 .dot-s7{background:#e67e22}
+
+/* Calendar event tags in day cells */
+.cal-ev-tag{
+  display:flex;align-items:center;gap:2px;padding:1px 3px;margin-top:1px;
+  border-radius:2px;background:var(--bg);font-size:.65rem;overflow:hidden;white-space:nowrap;
+  border-left:3px solid transparent;line-height:1.3;
+}
+.cal-ev-tag .cal-ev-time{font-weight:600;flex-shrink:0;color:var(--text);min-width:32px}
+.cal-ev-tag .cal-ev-text{overflow:hidden;text-overflow:ellipsis;color:var(--text-light)}
+.cal-ev-tag.dot-s1{border-left-color:#e07b7b}.cal-ev-tag.dot-s2{border-left-color:#6daa7e}
+.cal-ev-tag.dot-s3{border-left-color:#2b8fd1}.cal-ev-tag.dot-s4{border-left-color:#ff9800}
+.cal-ev-tag.dot-s5{border-left-color:#9b59b6}.cal-ev-tag.dot-s6{border-left-color:#1abc9c}
+.cal-ev-tag.dot-s7{border-left-color:#e67e22}
+.cal-ev-more{font-size:.62rem;color:var(--text-lighter);text-align:center;margin-top:1px;line-height:1.2}
 
 /* Day events list in editor */
 .day-event-item{
@@ -227,6 +237,18 @@ body{
 }
 .dose-stepper button:active{background:var(--accent-light);border-color:var(--accent)}
 .dose-stepper .dose-val{font-size:1.4rem;font-weight:700;min-width:36px;text-align:center}
+.preset-btn{
+  padding:6px 12px;border:1px solid var(--border);border-radius:16px;background:var(--surface);
+  font-size:.78rem;cursor:pointer;color:var(--text-light);font-family:inherit;transition:all .15s;min-width:40px;text-align:center;
+}
+.preset-btn:active{background:var(--primary-light);border-color:var(--primary);color:var(--primary-dark)}
+.time-min-input{
+  flex:1;text-align:center;padding:8px 4px;border:1px solid var(--border);border-radius:var(--radius-sm);
+  font-size:.9rem;font-family:inherit;color:var(--text);background:var(--surface);
+  -webkit-appearance:none;appearance:none;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%236b8299' d='M6 8L1 3h10z'/%3E%3C/svg%3E");
+  background-repeat:no-repeat;background-position:right 6px center;background-size:12px;padding-right:22px;
+}
 .editor-actions{display:flex;gap:10px;margin-top:20px}
 .editor-actions button{flex:1;padding:13px;border:none;border-radius:var(--radius-sm);font-size:1rem;font-weight:600;cursor:pointer;min-height:48px;transition:background .2s;font-family:inherit}
 .btn-clear{background:var(--bg);color:var(--text)}
@@ -320,11 +342,6 @@ body{
 <!-- Top Bar -->
 <div class="topbar">
   <div class="logo"><span>💊</span>智能药盒管理系统</div>
-  <div class="led-box">
-    <span>用药提醒 LED</span>
-    <div class="led-dot" id="topLedDot" title="GPIO4 状态"></div>
-    <span style="font-size:12px;color:var(--text-lighter)">GPIO4</span>
-  </div>
 </div>
 
 <!-- Main Content -->
@@ -410,6 +427,12 @@ body{
   </div>
 
 </main>
+
+<datalist id="minList">
+  <option value="00"><option value="05"><option value="10"><option value="15">
+  <option value="20"><option value="25"><option value="30"><option value="35">
+  <option value="40"><option value="45"><option value="50"><option value="55">
+</datalist>
 
 <!-- Global Actions -->
 <div class="global-actions" id="globalActions">
@@ -549,7 +572,7 @@ function renderSlots(){
       '<span class="slot-num '+(configured?'':'empty')+'">槽 '+s.slot+'</span>'+
       '<span class="slot-badge '+(configured?'':'off')+'"></span>'+
       '<div class="slot-drug '+(configured?'':'unset')+'">'+(configured ? escapeHtml(s.drug_name) : '未配置')+'</div>'+
-      '<div class="slot-info">'+(configured ? s.dose_count+'颗/次' : '点击配置')+'</div>';
+      '<div class="slot-info">'+(configured ? s.dose_count+'颗/次 · 剩余 '+(s.remaining||0)+'颗' : '点击配置')+'</div>';
     grid.appendChild(card);
   });
 }
@@ -583,6 +606,13 @@ function openSlotEditor(idx){
         '<button onclick="slotStepDose(1)">+</button>'+
       '</div>'+
     '</div>'+
+    '<div class="form-group">'+
+      '<label>剩余数量（颗）</label>'+
+      '<input type="number" id="editRemaining" value="'+(s.remaining||0)+'" min="0" max="999" step="1" inputmode="numeric" style="font-size:1.2rem;text-align:center;font-weight:600">'+
+      '<div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:8px">'+
+        ['0','5','10','15','20','30','50','100'].map(function(n){ return '<button class="preset-btn" onclick="setRemaining('+n+')">'+n+'</button>'; }).join('')+
+      '</div>'+
+    '</div>'+
     '<div class="editor-actions">'+
       '<button class="btn-clear" onclick="clearSlot()">清空此槽</button>'+
       '<button class="btn-save" onclick="closeSlotEditor()">确定</button>'+
@@ -596,6 +626,7 @@ function closeSlotEditor(){
   var s = currentPlan.slots[editingSlot];
   s.drug_name = document.getElementById('editDrugName').value.trim();
   s.shape_label = document.getElementById('editShape').value;
+  s.remaining = parseInt(document.getElementById('editRemaining').value) || 0;
   document.getElementById('slotEditorOverlay').classList.remove('active');
   document.querySelectorAll('.slot-card').forEach(function(c){ c.classList.remove('selected'); });
   editingSlot = -1;
@@ -604,7 +635,7 @@ function closeSlotEditor(){
 
 function clearSlot(){
   var s = currentPlan.slots[editingSlot];
-  s.drug_name=''; s.shape_label=''; s.dose_count=1; s.daily_frequency=0; s.times=[];
+  s.drug_name=''; s.shape_label=''; s.dose_count=1; s.daily_frequency=0; s.times=[]; s.remaining=0;
   closeSlotEditor();
 }
 
@@ -613,6 +644,10 @@ function slotStepDose(delta){
   s.dose_count = Math.max(1, Math.min(9, s.dose_count + delta));
   document.getElementById('doseDisplay').textContent = s.dose_count;
   saveCache();
+}
+
+function setRemaining(val){
+  document.getElementById('editRemaining').value = val;
 }
 
 // ===== Master Toggle =====
@@ -691,25 +726,34 @@ function renderCalendar(){
 
   grid.innerHTML = html;
 
-  // Add event dots to cells
+  // Add event tags to cells
   for(var d=1; d<=daysInMonth; d++){
     var cell = document.getElementById('calCell'+d);
     if(!cell) continue;
     var evts = dayEvtMap[d] || [];
     if(evts.length > 0){
-      var dots = document.createElement('div');
-      dots.className = 'day-dots';
-      // Deduplicate slots
-      var shownSlots = {};
-      evts.forEach(function(e){
-        if(!shownSlots[e.slot]){ shownSlots[e.slot]=true; }
-      });
-      for(var slot=1; slot<=7; slot++){
-        if(shownSlots[slot]){
-          dots.innerHTML += '<span class="day-dot '+SLOT_COLORS[slot-1]+'" title="槽'+slot+'"></span>';
+      evts.sort(function(a,b){ return (a.hour*60+a.minute) - (b.hour*60+b.minute); });
+      var maxShow = 3;
+      for(var i=0; i<evts.length && i<maxShow; i++){
+        var e = evts[i];
+        var hh = String(e.hour).padStart(2,'0');
+        var mm = String(e.minute).padStart(2,'0');
+        var slotName = '槽'+e.slot;
+        var drugName = '';
+        if(currentPlan.slots[e.slot-1] && currentPlan.slots[e.slot-1].drug_name){
+          drugName = currentPlan.slots[e.slot-1].drug_name;
         }
+        var tag = document.createElement('div');
+        tag.className = 'cal-ev-tag '+SLOT_COLORS[e.slot-1];
+        tag.innerHTML = '<span class="cal-ev-time">'+hh+':'+mm+'</span><span class="cal-ev-text">'+escapeHtml(slotName+(drugName?' '+drugName:''))+'</span>';
+        cell.appendChild(tag);
       }
-      cell.appendChild(dots);
+      if(evts.length > maxShow){
+        var more = document.createElement('div');
+        more.className = 'cal-ev-more';
+        more.textContent = '+'+(evts.length-maxShow)+'项';
+        cell.appendChild(more);
+      }
     }
   }
 }
@@ -791,7 +835,7 @@ function openDayEditor(day){
       '<div style="display:flex;gap:8px;align-items:center">'+
         '<select id="dayEvHour" style="flex:1;text-align:center">'+hourOptions(8)+'</select>'+
         '<span>:</span>'+
-        '<select id="dayEvMin" style="flex:1;text-align:center">'+minOptions(0)+'</select>'+
+        '<input type="text" id="dayEvMin" list="minList" class="time-min-input" value="00" pattern="[0-5]?[0-9]" autocomplete="off">'+
       '</div>'+
     '</div>'+
     '<div class="form-group">'+
@@ -827,6 +871,9 @@ function addDayEvent(){
   var hour = parseInt(document.getElementById('dayEvHour').value);
   var minute = parseInt(document.getElementById('dayEvMin').value);
   var dose = parseInt(document.getElementById('dayEvDoseDisplay').textContent);
+
+  if(isNaN(hour)||hour<0||hour>23){ showToast('小时无效 (0-23)','error'); return; }
+  if(isNaN(minute)||minute<0||minute>59){ showToast('分钟无效 (0-59)','error'); return; }
 
   // Check duplicate
   var events = getMonthEvents(calYear, calMonth);
@@ -1088,12 +1135,6 @@ function checkMedicationTime(){
     });
   }
 
-  setLedState(isOn ? 'on' : 'off');
-}
-
-function setLedState(state){
-  var dot = document.getElementById('topLedDot');
-  if(dot) dot.className = 'led-dot ' + (state==='on'?'on':'');
 }
 
 // ===== Device Communication =====
@@ -1185,13 +1226,16 @@ async function loadFromDevice(){
 }
 
 function resetAll(){
-  if(!confirm('确定要清空所有配置吗？包括药槽和用药计划。此操作不可撤销。')) return;
-  currentPlan = JSON.parse(JSON.stringify(DEFAULT_PLAN));
+  if(!confirm('确定要清空全部用药计划吗？药槽设置（药品名称、颗数、剩余数量等）将保留。此操作不可撤销。')) return;
   calendarData = {};
+  currentPlan.slots.forEach(function(s){
+    s.daily_frequency = 0;
+    s.times = [];
+  });
   saveCache();
   saveCalendarCache();
   renderAll(); updateStatusView();
-  showToast('已清空所有配置');
+  showToast('已清空全部用药计划，药槽设置已保留');
 }
 
 // ===== Toast =====
@@ -1218,9 +1262,10 @@ function hourOptions(sel){
   for(var h=0;h<24;h++){ var hh=String(h).padStart(2,'0'); s+='<option value="'+h+'" '+(h===sel?'selected':'')+'>'+hh+'</option>'; }
   return s;
 }
-function minOptions(sel){
+function minOptions(sel, step){
+  step = step || 1;
   var s='';
-  for(var m=0;m<60;m++){ var mm=String(m).padStart(2,'0'); s+='<option value="'+m+'" '+(m===sel?'selected':'')+'>'+mm+'</option>'; }
+  for(var m=0;m<60;m+=step){ var mm=String(m).padStart(2,'0'); s+='<option value="'+m+'" '+(m===sel?'selected':'')+'>'+mm+'</option>'; }
   return s;
 }
 
@@ -1229,6 +1274,7 @@ document.addEventListener('DOMContentLoaded', init);
 </script>
 </body>
 </html>
+
 )rawliteral";
 
 struct MedTime {
@@ -1271,7 +1317,7 @@ public:
         RegisterHandlers();
     }
 
-    void SetEventCallback(std::function<void(const char*)> cb) {
+    void SetEventCallback(std::function<void(int slot, int dose, const char* msg)> cb) {
         on_event_fired_ = std::move(cb);
     }
 
@@ -1307,7 +1353,7 @@ public:
                              drug[0] ? drug : "(未命名)", e.slot, e.dose);
                     ESP_LOGI(TAG_MCS, "%s", msg);
 
-                    if (on_event_fired_) on_event_fired_(msg);
+                    if (on_event_fired_) on_event_fired_(e.slot, e.dose, msg);
 
                     char screen_msg[128];
                     snprintf(screen_msg, sizeof(screen_msg),
@@ -1334,7 +1380,7 @@ public:
                              s.drug_name.c_str(), s.slot, s.dose_count);
                     ESP_LOGI(TAG_MCS, "%s", msg);
 
-                    if (on_event_fired_) on_event_fired_(msg);
+                    if (on_event_fired_) on_event_fired_(s.slot, s.dose_count, msg);
 
                     char screen_msg[128];
                     snprintf(screen_msg, sizeof(screen_msg),
@@ -1409,7 +1455,7 @@ private:
     MedPlan plan_;
     int last_fired_ = -1;
     std::map<std::string, std::vector<CalendarEvent>> calendar_;
-    std::function<void(const char*)> on_event_fired_;
+    std::function<void(int slot, int dose, const char* msg)> on_event_fired_;
 
     static constexpr const char* NVS_NS = "medplan";
     static constexpr const char* NVS_KEY = "plan";

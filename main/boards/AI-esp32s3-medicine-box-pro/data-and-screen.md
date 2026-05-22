@@ -1,6 +1,6 @@
 ## 数据存储与多端联动
 
-### 数据权威：NVS + MedicineReminder
+### 数据权威：NVS + MedicineConfigServer
 
 网页、串口屏、小智本地逻辑三方共享同一份服药计划数据。数据架构如下：
 
@@ -15,10 +15,12 @@
                  │ LoadPlan() / SavePlan()
                  ▼
 ┌───────────────────────────────────────┐
-│       MedicineReminder (单例)          │  ← 唯一数据权威
+│     MedicineConfigServer (单例)        │  ← 唯一数据权威
 │  - SetPlanFromJson(json)             │
 │  - GetPlanJson() → cJSON*            │
 │  - NotifyListeners() 变更广播         │
+│  - CheckAndNotify() 定时触发检查      │
+│  - SetEventCallback(on_event_fired)   │
 └──┬──────────────┬──────────────┬──────┘
    │              │              │
    ▼              ▼              ▼
@@ -31,16 +33,17 @@
 
 **设计要点**：
 
-- `MedicineReminder` 是唯一的数据读写入口，三方不直接操作 NVS
-- 任何一方修改数据 → `MedicineReminder` 更新内存 → `SavePlan()` 写入 NVS → `NotifyListeners()` 广播变更
+- `MedicineConfigServer` 是唯一的数据读写入口，三方不直接操作 NVS
+- 任何一方修改数据 → `MedicineConfigServer` 更新内存 → `SavePlan()` 写入 NVS → `NotifyListeners()` 广播变更
 - `NotifyListeners` 是一个回调列表，Web 和串口屏各自注册，确保数据始终同步
+- `SetEventCallback` 注册事件触发回调 → 用药提醒时自动转盘 + 大字显示 + OGG 循环播报
 
 ### 联动流程：Web 修改 → 串口屏自动刷新
 
 ```
 1. 子女用手机打开 Web 配置页，将 1 号槽药品从"降压药"改为"降压药缓释片"
 2. 网页 POST /api/medicine/plan → XiaoZhi HTTP Server 收到 JSON
-3. HttpSetPlanHandler 调用 MedicineReminder::SetPlanFromJson(json)
+3. HttpSetPlanHandler 调用 MedicineConfigServer::SetPlanFromJson(json)
 4. SetPlanFromJson 内部:
    a. cJSON_Parse(json) → 更新内存 MedicinePlan 结构体
    b. SavePlan() → Settings.SetString("med_plan", "plan_json", json) → 写入 NVS
@@ -56,7 +59,7 @@
 1. 老人触控串口屏，把 08:00 提醒改成 07:30
 2. 串口屏通过 UART 发: {"type":"update_reminder","slot":1,"old_time":"08:00","new_time":"07:30"}
 3. XiaoZhi UART 任务收到 → 解析 JSON
-4. 调用 MedicineReminder::UpdateReminderTime(1, "08:00", "07:30")
+4. 调用 MedicineConfigServer::UpdateReminderTime(1, "08:00", "07:30")
 5. 更新内存数据 → SavePlan() → NVS
 6. NotifyListeners → 串口屏显示确认弹窗; Web 端(下次刷新即见新时间)
 ```
@@ -114,8 +117,8 @@ class TjcSerialScreen {
 public:
     TjcSerialScreen(uart_port_t port, int tx_pin, int rx_pin);
 
-    // 注册 MedicineReminder 变更回调
-    void AttachToReminder(MedicineReminder& reminder);
+    // 注册 MedicineConfigServer 变更回调
+    void AttachToReminder(MedicineConfigServer& reminder);
 
     // 发送 JSON 消息，内部转换为淘晶驰指令
     void SendUpdate(const cJSON* json);
@@ -129,7 +132,7 @@ private:
     // 淘晶驰指令发送（自动追加帧尾）
     void SendCommand(const char* cmd);
 
-    // UART 接收任务：解析淘晶驰事件 → 转换为 JSON → 调用 MedicineReminder
+    // UART 接收任务：解析淘晶驰事件 → 转换为 JSON → 调用 MedicineConfigServer
     static void UartTask(void* arg);
     void ProcessTouchEvent(const char* raw_event);
 

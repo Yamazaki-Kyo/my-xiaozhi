@@ -40,6 +40,21 @@
 // 定时调度器 LED (GPIO3, 高电平亮)
 #define SCHEDULER_LED_GPIO GPIO_NUM_3
 
+// 用药提醒静音按钮 (GPIO10, 按下停止播报并清除屏幕提醒)
+#define MED_DISMISS_BUTTON_GPIO GPIO_NUM_10
+
+// 药盘转盘微动开关 (SW0=归零位/槽0, SW1=槽1~7计数)
+#define TURNTABLE_SW0_PIN GPIO_NUM_1
+#define TURNTABLE_SW1_PIN GPIO_NUM_2
+
+// MAX30102 血氧/心率传感器 (I2C)
+#define MAX30102_I2C_SDA_PIN GPIO_NUM_17
+#define MAX30102_I2C_SCL_PIN GPIO_NUM_18
+#define MAX30102_I2C_ADDR     0x57
+
+// 健康检测结果自动消失时间 (毫秒)
+#define HEALTH_RESULT_DISPLAY_MS 8000
+
 // SPI LCD 显示屏 (ST7789 240x240 1.54寸 8Pin, 参考 bread-compact-wifi-s3cam)
 #define DISPLAY_MOSI_PIN      GPIO_NUM_20
 #define DISPLAY_CLK_PIN       GPIO_NUM_19
