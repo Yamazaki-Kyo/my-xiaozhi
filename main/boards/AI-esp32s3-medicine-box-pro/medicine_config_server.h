@@ -606,7 +606,7 @@ var DEFAULT_PLAN = {
   master_enabled: true,
   slots: (function(){
     var arr = [];
-    for(var i=0;i<7;i++){ arr.push({slot:i+1, drug_name:"", shape_label:"", dose_count:1, daily_frequency:0, times:[], remaining:0}); }
+    for(var i=0;i<7;i++){ arr.push({slot:i+1, drug_name:"", shape_label:"", dose_count:1, daily_frequency:0, times:[], remaining:0, expiry_date:""}); }
     return arr;
   })()
 };
@@ -650,7 +650,11 @@ function loadCache(){
     var raw = localStorage.getItem(STORE_PLAN);
     if(raw){
       var p = JSON.parse(raw);
-      if(p.slots && p.slots.length===7) currentPlan = p;
+      if(p.slots && p.slots.length===7){
+        // 迁移旧数据：补全缺失的 expiry_date 字段
+        p.slots.forEach(function(s){ if(s.expiry_date===undefined) s.expiry_date=''; });
+        currentPlan = p;
+      }
     }
   }catch(e){}
 }
@@ -689,6 +693,13 @@ function renderAll(){
 }
 
 // ===== Slot Config (View 2 - Simplified) =====
+function turntableGoSlot(n){
+  fetch('/api/turntable/go',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({slot:n})})
+    .then(function(r){return r.json();})
+    .then(function(d){if(!d.ok) console.warn('goToSlot failed:',d.error);})
+    .catch(function(e){console.warn('goToSlot error:',e);});
+}
+
 function renderSlots(){
   var grid = document.getElementById('slotGrid');
   if(!grid) return;
@@ -696,15 +707,33 @@ function renderSlots(){
   currentPlan.slots.forEach(function(s,i){
     var card = document.createElement('div');
     card.className = 'slot-card';
-    card.onclick = function(){ openSlotEditor(i); };
+    card.onclick = function(){
+      if(s.drug_name && s.drug_name.length > 0) turntableGoSlot(s.slot);
+      openSlotEditor(i);
+    };
     var configured = s.drug_name && s.drug_name.length > 0;
+    var info = configured ? s.dose_count+'颗/次 · 剩余 '+(s.remaining||0)+'颗' : '点击配置';
+    if(configured && s.expiry_date){
+      var daysLeft = calcDaysLeft(s.expiry_date);
+      if(daysLeft <= 30) info += ' · <span style="color:'+(daysLeft<0?'#e07b7b':daysLeft<7?'#e07b7b':'#ff9800')+'">';
+      info += ' 保质至 '+s.expiry_date;
+      if(daysLeft <= 30) info += ' ('+(daysLeft<0?'已过期':daysLeft+'天')+')</span>';
+    }
     card.innerHTML =
       '<span class="slot-num '+(configured?'':'empty')+'">槽 '+s.slot+'</span>'+
       '<span class="slot-badge '+(configured?'':'off')+'"></span>'+
       '<div class="slot-drug '+(configured?'':'unset')+'">'+(configured ? escapeHtml(s.drug_name) : '未配置')+'</div>'+
-      '<div class="slot-info">'+(configured ? s.dose_count+'颗/次 · 剩余 '+(s.remaining||0)+'颗' : '点击配置')+'</div>';
+      '<div class="slot-info">'+info+'</div>';
     grid.appendChild(card);
   });
+}
+
+function calcDaysLeft(dateStr){
+  if(!dateStr) return 999;
+  var parts = dateStr.split('-');
+  var d = new Date(parseInt(parts[0]), parseInt(parts[1])-1, parseInt(parts[2]));
+  var now = new Date(); now.setHours(0,0,0,0);
+  return Math.ceil((d.getTime() - now.getTime()) / 86400000);
 }
 
 // ===== Slot Editor (simplified: no reminder times) =====
@@ -743,6 +772,10 @@ function openSlotEditor(idx){
         ['0','5','10','15','20','30','50','100'].map(function(n){ return '<button class="preset-btn" onclick="setRemaining('+n+')">'+n+'</button>'; }).join('')+
       '</div>'+
     '</div>'+
+    '<div class="form-group">'+
+      '<label>保质期截止日期</label>'+
+      '<input type="date" id="editExpiry" value="'+(s.expiry_date||'')+'" style="font-size:1.1rem;text-align:center;padding:10px">'+
+    '</div>'+
     '<div class="editor-actions">'+
       '<button class="btn-clear" onclick="clearSlot()">清空此槽</button>'+
       '<button class="btn-save" onclick="closeSlotEditor()">确定</button>'+
@@ -757,6 +790,7 @@ function closeSlotEditor(){
   s.drug_name = document.getElementById('editDrugName').value.trim();
   s.shape_label = document.getElementById('editShape').value;
   s.remaining = parseInt(document.getElementById('editRemaining').value) || 0;
+  s.expiry_date = document.getElementById('editExpiry').value || '';
   document.getElementById('slotEditorOverlay').classList.remove('active');
   document.querySelectorAll('.slot-card').forEach(function(c){ c.classList.remove('selected'); });
   editingSlot = -1;
@@ -765,7 +799,7 @@ function closeSlotEditor(){
 
 function clearSlot(){
   var s = currentPlan.slots[editingSlot];
-  s.drug_name=''; s.shape_label=''; s.dose_count=1; s.daily_frequency=0; s.times=[]; s.remaining=0;
+  s.drug_name=''; s.shape_label=''; s.dose_count=1; s.daily_frequency=0; s.times=[]; s.remaining=0; s.expiry_date='';
   closeSlotEditor();
 }
 
@@ -1309,6 +1343,8 @@ async function saveToDevice(){
     }, 8000);
     if(resp.ok){
       showToast('全部计划已保存并下发','success');
+      // 保存后自动归零转盘
+      fetch('/api/turntable/home',{method:'POST'}).catch(function(){});
     } else {
       showToast('保存日历失败: '+await resp.text(),'error');
     }
@@ -1420,6 +1456,7 @@ struct MedSlot {
     int daily_frequency;
     MedTime times[5];
     int remaining;
+    std::string expiry_date;  // 保质期 "YYYY-MM-DD"
 };
 
 struct MedPlan {
@@ -1610,6 +1647,8 @@ private:
             cJSON_AddNumberToObject(item, "dose", s.dose_count);
             cJSON_AddNumberToObject(item, "freq", s.daily_frequency);
             cJSON_AddNumberToObject(item, "remain", s.remaining);
+            if (!s.expiry_date.empty())
+                cJSON_AddStringToObject(item, "expiry", s.expiry_date.c_str());
 
             cJSON* times = cJSON_AddArrayToObject(item, "times");
             for (int i = 0; i < s.daily_frequency; i++) {
@@ -1666,6 +1705,7 @@ private:
             plan_.slots[i].dose_count = 1;
             plan_.slots[i].daily_frequency = 0;
             plan_.slots[i].remaining = 0;
+            plan_.slots[i].expiry_date.clear();
         }
 
         nvs_handle_t h;
@@ -1722,6 +1762,8 @@ private:
                 if (cJSON_IsNumber(freq)) s.daily_frequency = freq->valueint;
                 cJSON* remain = cJSON_GetObjectItem(item, "remain");
                 if (cJSON_IsNumber(remain)) s.remaining = remain->valueint;
+                cJSON* expiry = cJSON_GetObjectItem(item, "expiry");
+                if (cJSON_IsString(expiry)) s.expiry_date = expiry->valuestring;
 
                 cJSON* times = cJSON_GetObjectItem(item, "times");
                 if (cJSON_IsArray(times)) {
@@ -1838,6 +1880,8 @@ private:
                     cJSON_AddNumberToObject(item, "dose_count", s.dose_count);
                     cJSON_AddNumberToObject(item, "daily_frequency", s.daily_frequency);
                     cJSON_AddNumberToObject(item, "remaining", s.remaining);
+                    if (!s.expiry_date.empty())
+                        cJSON_AddStringToObject(item, "expiry_date", s.expiry_date.c_str());
 
                     cJSON* times = cJSON_AddArrayToObject(item, "times");
                     for (int i = 0; i < s.daily_frequency; i++) {
@@ -1899,6 +1943,10 @@ private:
                             if (cJSON_IsNumber(freq)) s.daily_frequency = freq->valueint;
                             cJSON* remain = cJSON_GetObjectItem(item, "remaining");
                             if (cJSON_IsNumber(remain)) s.remaining = remain->valueint;
+                            cJSON* expiry = cJSON_GetObjectItem(item, "expiry_date");
+                            if (cJSON_IsString(expiry)) s.expiry_date = expiry->valuestring;
+                            // nullptr / "" / "null" 均视为清除
+                            if (s.expiry_date == "null") s.expiry_date.clear();
 
                             cJSON* times = cJSON_GetObjectItem(item, "times");
                             if (cJSON_IsArray(times)) {
