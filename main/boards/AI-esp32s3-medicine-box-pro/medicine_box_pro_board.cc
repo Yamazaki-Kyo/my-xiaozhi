@@ -96,6 +96,8 @@ private:
     MedicineConfigServer* medicine_config_server_ = nullptr;
     esp_timer_handle_t http_retry_timer_ = nullptr;
     esp_timer_handle_t med_check_timer_ = nullptr;
+    esp_timer_handle_t expiry_check_timer_ = nullptr;
+    int last_expiry_check_day_ = -1;  // 避免同一天重复推送
     esp_timer_handle_t ip_poll_timer_ = nullptr;
     esp_timer_handle_t display_refresh_timer_ = nullptr;
     esp_timer_handle_t voice_loop_timer_ = nullptr;
@@ -194,6 +196,62 @@ private:
                 std::string full = "该吃药了! " + alert_msg;
                 self->display_->ShowNotification(full, 10000);
             }
+        }
+    }
+
+    static void ExpiryCheckCallback(void* arg) {
+        auto* self = (MedicineBoxProBoard*)arg;
+        time_t now = time(NULL);
+        struct tm tm_now;
+        localtime_r(&now, &tm_now);
+        int today = tm_now.tm_year * 366 + tm_now.tm_yday;  // 唯一日编号
+
+        if (today == self->last_expiry_check_day_) return;
+        self->last_expiry_check_day_ = today;
+
+        auto& plan = self->medicine_config_server_->GetPlan();
+        for (auto& s : plan.slots) {
+            if (s.drug_name.empty() || s.expiry_date.empty()) continue;
+
+            // 解析保质期 "YYYY-MM-DD"
+            int ey, em, ed;
+            if (sscanf(s.expiry_date.c_str(), "%d-%d-%d", &ey, &em, &ed) != 3) continue;
+            struct tm exp_tm = {};
+            exp_tm.tm_year = ey - 1900;
+            exp_tm.tm_mon  = em - 1;
+            exp_tm.tm_mday = ed;
+            time_t exp_time = mktime(&exp_tm);
+            int days_left = (int)((exp_time - now) / 86400);
+
+            if (days_left > 7) continue;  // 超过7天不提醒
+
+            char summary[64], content[256];
+            const char* drug = s.drug_name.c_str();
+            if (days_left < 0) {
+                snprintf(summary, sizeof(summary), "药品已过期 - 槽%d", s.slot);
+                snprintf(content, sizeof(content),
+                         "## 药品过期提醒\n\n"
+                         "**药物**: %s\n**槽位**: %d\n**保质期**: %s\n\n"
+                         "状态: 已过期 %d 天，请及时更换",
+                         drug, s.slot, s.expiry_date.c_str(), -days_left);
+            } else if (days_left == 0) {
+                snprintf(summary, sizeof(summary), "药品今日到期 - 槽%d", s.slot);
+                snprintf(content, sizeof(content),
+                         "## 药品到期提醒\n\n"
+                         "**药物**: %s\n**槽位**: %d\n**保质期**: %s\n\n"
+                         "状态: 今日到期，请及时更换",
+                         drug, s.slot, s.expiry_date.c_str());
+            } else {
+                snprintf(summary, sizeof(summary), "药品即将到期 - 槽%d", s.slot);
+                snprintf(content, sizeof(content),
+                         "## 药品临期提醒\n\n"
+                         "**药物**: %s\n**槽位**: %d\n**保质期**: %s\n\n"
+                         "状态: 剩余 %d 天到期，请准备更换",
+                         drug, s.slot, s.expiry_date.c_str(), days_left);
+            }
+            self->notifier_.SendMarkdown(summary, content);
+            ESP_LOGI(TAG, "保质期提醒已推送微信 (槽%d, %s)", s.slot,
+                     days_left < 0 ? "已过期" : days_left == 0 ? "今日到期" : "临期");
         }
     }
 
@@ -615,6 +673,17 @@ public:
             esp_timer_start_periodic(med_check_timer_, 30000000); // 30秒
         }
 
+        // 保质期检查定时器 (每小时检查一次)
+        {
+            esp_timer_create_args_t exp_args = {};
+            exp_args.callback = ExpiryCheckCallback;
+            exp_args.arg = this;
+            exp_args.dispatch_method = ESP_TIMER_TASK;
+            exp_args.name = "expiry_check";
+            esp_timer_create(&exp_args, &expiry_check_timer_);
+            esp_timer_start_periodic(expiry_check_timer_, 3600000000); // 1小时
+        }
+
         // === MCP 工具注册 ===
         // WxPusher 微信推送
         McpServer::GetInstance().AddTool(
@@ -694,6 +763,98 @@ public:
                     return std::string(buf);
                 }
                 return std::string("添加失败: " + error);
+            });
+
+        // === 药盘转盘远程控制工具 (MQTT/WebSocket MCP) ===
+
+        McpServer::GetInstance().AddTool(
+            "turntable_status",
+            "查询药盘转盘状态: 是否就绪、当前所在药槽",
+            PropertyList(),
+            [this](const PropertyList& props) -> ReturnValue {
+                if (!turntable_) return std::string("转盘未初始化");
+                char buf[128];
+                snprintf(buf, sizeof(buf), "就绪:%s 当前槽位:%d",
+                         turntable_->isReady() ? "是" : "否",
+                         turntable_->getCurrentSlot());
+                return std::string(buf);
+            });
+
+        McpServer::GetInstance().AddTool(
+            "turntable_go_slot",
+            "控制药盘转盘旋转到指定药槽 (1-7, 0为归零)",
+            PropertyList({
+                Property("slot", kPropertyTypeInteger, 0, 7),
+            }),
+            [this](const PropertyList& props) -> ReturnValue {
+                if (!turntable_) return std::string("转盘未初始化");
+                if (!turntable_->isReady()) return std::string("转盘未就绪, 请等待寻零完成");
+                int slot = props["slot"].value<int>();
+                if (slot == 0) {
+                    turntable_->goHome();
+                    return std::string("转盘正在归零...");
+                }
+                turntable_->goToSlot(slot);
+                char buf[64];
+                snprintf(buf, sizeof(buf), "转盘正在转向药槽%d", slot);
+                return std::string(buf);
+            });
+
+        McpServer::GetInstance().AddTool(
+            "turntable_go_home",
+            "控制药盘转盘归零 (返回药槽0参考位置)",
+            PropertyList(),
+            [this](const PropertyList& props) -> ReturnValue {
+                if (!turntable_) return std::string("转盘未初始化");
+                if (!turntable_->isReady()) return std::string("转盘未就绪, 请等待寻零完成");
+                turntable_->goHome();
+                return std::string("转盘正在归零...");
+            });
+
+        McpServer::GetInstance().AddTool(
+            "medicine_plan_status",
+            "查询当前用药计划详情 (药物、药槽、时间、剂量、保质期)",
+            PropertyList(),
+            [this](const PropertyList& props) -> ReturnValue {
+                if (!medicine_config_server_) return std::string("用药配置未初始化");
+                return medicine_config_server_->GetPlanSummary();
+            });
+
+        McpServer::GetInstance().AddTool(
+            "medicine_remind_now",
+            "立即触发指定药槽的用药提醒 (屏幕通知 + 语音播报 + 转盘就位)",
+            PropertyList({
+                Property("slot", kPropertyTypeInteger, 1, 7),
+            }),
+            [this](const PropertyList& props) -> ReturnValue {
+                if (!medicine_config_server_) return std::string("用药配置未初始化");
+                int slot = props["slot"].value<int>();
+                auto& plan = medicine_config_server_->GetPlan();
+                if (slot < 1 || slot > 7) return std::string("无效药槽号 (1-7)");
+                auto& s = plan.slots[slot - 1];
+                if (s.drug_name.empty()) return std::string("该药槽未配置药物");
+
+                char msg[128];
+                snprintf(msg, sizeof(msg), "远程用药提醒: %s, 槽位%d, 每次%d颗",
+                         s.drug_name.c_str(), slot, s.dose_count);
+
+                // 舵机转至目标药槽
+                if (turntable_ && turntable_->isReady()) {
+                    turntable_->goToSlot(slot);
+                }
+
+                // 屏幕 + 语音 (通过 Schedule 延迟到主任务, 避免阻塞 MCP 回调)
+                auto& app = Application::GetInstance();
+                int cap_slot = slot, cap_dose = s.dose_count;
+                std::string cap_drug = s.drug_name;
+                app.Schedule([this, cap_slot, cap_dose, cap_drug]() {
+                    if (display_) display_->ShowDoseOverlay(cap_slot, cap_dose);
+                    Application::GetInstance().Alert("用药提醒", cap_drug.c_str(), "");
+                });
+
+                ESP_LOGI(TAG, "MCP 远程触发用药提醒: 槽%d (%s x%d)",
+                         slot, s.drug_name.c_str(), s.dose_count);
+                return std::string(msg);
             });
 
         if (DISPLAY_BACKLIGHT_PIN != GPIO_NUM_NC) {

@@ -31,10 +31,12 @@ public:
         ESP_ERROR_CHECK(ledc_channel_config(&ch_cfg));
 
         gpio_config_t home_cfg = {};
-        home_cfg.pin_bit_mask = (1ULL << home_switch_pin_);
-        home_cfg.mode = GPIO_MODE_INPUT;
-        home_cfg.pull_up_en = GPIO_PULLUP_ENABLE;
-        ESP_ERROR_CHECK(gpio_config(&home_cfg));
+        if (home_switch_pin_ != GPIO_NUM_NC) {
+            home_cfg.pin_bit_mask = (1ULL << home_switch_pin_);
+            home_cfg.mode = GPIO_MODE_INPUT;
+            home_cfg.pull_up_en = GPIO_PULLUP_ENABLE;
+            ESP_ERROR_CHECK(gpio_config(&home_cfg));
+        }
 
         ESP_LOGI(TAG_SERVO, "360°舵机调试模式 (PWM: GPIO%d, 开关: GPIO%d)",
                  pwm_pin_, home_switch_pin_);
@@ -138,7 +140,7 @@ public:
     uint32_t GetPulse()        const { return current_pulse_; }
     int      GetDeviation()    const { return (int)current_pulse_ - (int)EffectiveCenter(); }
     bool     IsMoving()        const { return moving_; }
-    bool     IsHomeTriggered() const { return gpio_get_level(home_switch_pin_) == 0; }
+    bool     IsHomeTriggered() const { return home_switch_pin_ != GPIO_NUM_NC && gpio_get_level(home_switch_pin_) == 0; }
 
     static constexpr uint32_t STOP_US = 1500;
     static constexpr int      MAX_DEV = 300;
