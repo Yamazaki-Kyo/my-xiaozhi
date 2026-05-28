@@ -128,7 +128,7 @@ private:
         auto* self = (MedicineBoxProBoard*)arg;
         httpd_handle_t http_server = nullptr;
         httpd_config_t http_cfg = HTTPD_DEFAULT_CONFIG();
-        http_cfg.max_uri_handlers = 20;
+        http_cfg.max_uri_handlers = 32;
         http_cfg.uri_match_fn = httpd_uri_match_wildcard;
 
         if (httpd_start(&http_server, &http_cfg) == ESP_OK) {
@@ -541,35 +541,37 @@ public:
 
         // 智能药盒用药配置 (稍后网络就绪时注册路由)
         medicine_config_server_ = new MedicineConfigServer();
+        medicine_config_server_->SetTurntable(turntable_);  // 注册转盘调试接口
 
         // 用药提醒回调：到点时屏幕通知 + 大字剂量 + OGG 语音循环播报
         medicine_config_server_->SetEventCallback([this](int slot, int dose, const char* msg) {
             reminder_active_ = true;
-            // 舵机转至目标药槽
+            // 舵机转至目标药槽 (必须在 ESP_TIMER_TASK 中立即执行, 不能 defer)
             if (turntable_ && turntable_->isReady()) {
                 turntable_->goToSlot(slot);
                 ESP_LOGI(TAG, "用药提醒: 舵机转至槽%d", slot);
             }
-            // 屏幕左侧大字显示服药数量
-            if (display_) {
-                display_->ShowDoseOverlay(slot, dose);
-            }
+            // 以下操作通过 Schedule 延迟到主任务, 避免阻塞 ESP_TIMER_TASK 导致
+            // PollCallback 无法执行, 从而错过 SW1 触发造成药槽定位偏移
             auto& app = Application::GetInstance();
-            std::string text(msg);
-            app.Schedule([text]() {
-                Application::GetInstance().Alert("用药提醒", text.c_str(), "");
+            int cap_slot = slot, cap_dose = dose;
+            std::string cap_msg(msg);
+            app.Schedule([this, cap_slot, cap_dose, cap_msg]() {
+                if (display_) {
+                    display_->ShowDoseOverlay(cap_slot, cap_dose);
+                }
+                Application::GetInstance().Alert("用药提醒", cap_msg.c_str(), "");
+                if (!voice_loop_timer_) {
+                    esp_timer_create_args_t voice_args = {};
+                    voice_args.callback = VoiceLoopCallback;
+                    voice_args.arg = nullptr;
+                    voice_args.dispatch_method = ESP_TIMER_TASK;
+                    voice_args.name = "voice_loop";
+                    esp_timer_create(&voice_args, &voice_loop_timer_);
+                }
+                Application::GetInstance().PlaySound(Lang::Sounds::OGG_MED_REMINDER);
+                esp_timer_start_periodic(voice_loop_timer_, 5500000); // 5.5秒循环
             });
-            // 循环播放 OGG 语音 (~5.3秒)，直到按下 GPIO10 按钮停止
-            if (!voice_loop_timer_) {
-                esp_timer_create_args_t voice_args = {};
-                voice_args.callback = VoiceLoopCallback;
-                voice_args.arg = nullptr;
-                voice_args.dispatch_method = ESP_TIMER_TASK;
-                voice_args.name = "voice_loop";
-                esp_timer_create(&voice_args, &voice_loop_timer_);
-            }
-            Application::GetInstance().PlaySound(Lang::Sounds::OGG_MED_REMINDER);
-            esp_timer_start_periodic(voice_loop_timer_, 5500000); // 5.5秒循环
         });
 
         // 用药提醒检查定时器 (每 30 秒)

@@ -45,16 +45,21 @@ public:
             return;
         }
 
-        // 先检测 SW0 是否已触发 (已在归零点)
-        if (gpio_get_level(sw0_pin_) == 0) {
-            ESP_LOGI(TAG_PBT, "SW0 已触发, 已在归零点, 跳过寻零");
+        // 多次采样消抖确认 SW0 是否已触发 (避免单次 GPIO 噪声误判)
+        int sw0_low = 0;
+        for (int i = 0; i < 16; i++) {
+            if (gpio_get_level(sw0_pin_) == 0) sw0_low++;
+            vTaskDelay(pdMS_TO_TICKS(2));  // 共 32ms
+        }
+        if (sw0_low >= 14) {
+            ESP_LOGI(TAG_PBT, "SW0 消抖确认触发, 已在归零点, 跳过寻零");
             current_slot_ = 0;
             sw1_counter_ = 0;
             ready_ = true;
             return;
         }
 
-        ESP_LOGI(TAG_PBT, "SW0 未触发, 开始寻零流程...");
+        ESP_LOGI(TAG_PBT, "SW0 未触发 (低电平 %d/16), 开始寻零流程...", sw0_low);
         performHoming();
     }
 
@@ -81,12 +86,15 @@ public:
         }
 
         ESP_LOGI(TAG_PBT, "转槽: %d → %d", current_slot_, n);
+        esp_timer_stop(poll_timer_);
         target_slot_ = n;
-        sw1_counter_ = current_slot_;  // 从当前位置开始计数
+        sw1_counter_ = current_slot_;
+        // 舵机启动前初始化消抖 + 300ms 冷却抑制 EMI, poll_timer_ 先于舵机开始检测
+        resetDebounce(sw1_db_, sw1_pin_, STARTUP_COOLDOWN);
+        esp_timer_start_periodic(poll_timer_, POLL_INTERVAL_US);
         is_moving_ = true;
         movement_start_time_ = esp_timer_get_time();
         startMotor(NORMAL_DEV);
-        esp_timer_start_periodic(poll_timer_, POLL_INTERVAL_US);
     }
 
     void goHome() {
@@ -103,12 +111,14 @@ public:
             return;
         }
         ESP_LOGI(TAG_PBT, "归零: %d → 0, 寻找 SW0...", current_slot_);
+        esp_timer_stop(poll_timer_);
+        resetDebounce(sw0_db_, sw0_pin_, STARTUP_COOLDOWN);
         target_slot_ = 0;
         sw1_counter_ = -1;
         is_moving_ = true;
         movement_start_time_ = esp_timer_get_time();
-        startMotor(HOMING_DEV);  // 归零使用半速, 减少过冲
         esp_timer_start_periodic(poll_timer_, POLL_INTERVAL_US);
+        startMotor(HOMING_DEV);
     }
 
     int  getCurrentSlot() const { return current_slot_; }
@@ -121,7 +131,6 @@ private:
     int current_slot_ = -1;
     int target_slot_ = -1;
     int sw1_counter_ = 0;
-    int brake_cycles_ = 0;
     bool is_homing_ = false;
     bool is_moving_ = false;
     bool ready_ = false;
@@ -139,10 +148,11 @@ private:
 
     static constexpr int DEBOUNCE_SAMPLES = 4;      // 4 × 5ms = 20ms
     static constexpr int COOLDOWN_SAMPLES = 30;     // 30 × 5ms = 150ms
+    static constexpr int STARTUP_COOLDOWN = 60;     // 60 × 5ms = 300ms 舵机启动 EMI 抑制
     static constexpr int POLL_INTERVAL_US = 5000;   // 5ms
-    static constexpr int HOMING_DEV = 150;
+    static constexpr int HOMING_DEV = 300;
     static constexpr int NORMAL_DEV = 300;
-    static constexpr int64_t TIMEOUT_US = 15000000; // 15s
+    static constexpr int64_t TIMEOUT_US = 30000000; // 30s
 
     void startMotor(int dev) {
         dispenser_->Rotate(dev);
@@ -152,14 +162,25 @@ private:
         dispenser_->Stop();
     }
 
+    void resetDebounce(DebounceState& db, gpio_num_t pin, int initial_cooldown = 0) {
+        bool raw = (gpio_get_level(pin) == 0);
+        db.last_raw = raw;
+        db.stable = raw;
+        db.stable_count = DEBOUNCE_SAMPLES;
+        db.cooldown = initial_cooldown;
+    }
+
     void performHoming() {
+        esp_timer_stop(poll_timer_);
+        resetDebounce(sw0_db_, sw0_pin_, STARTUP_COOLDOWN);
+        resetDebounce(sw1_db_, sw1_pin_);
         is_homing_ = true;
         is_moving_ = true;
         target_slot_ = 0;
         sw1_counter_ = 0;
         movement_start_time_ = esp_timer_get_time();
-        startMotor(HOMING_DEV);
         esp_timer_start_periodic(poll_timer_, POLL_INTERVAL_US);
+        startMotor(HOMING_DEV);
     }
 
     // 返回 true 表示检测到一次有效按下 (HIGH→LOW 边沿)
@@ -188,17 +209,6 @@ private:
     static void PollCallback(void* arg) {
         auto* self = (PillBoxTurntable*)arg;
 
-        // 刹车倒计时 (制动期间不处理其他逻辑)
-        if (self->brake_cycles_ > 0) {
-            self->brake_cycles_--;
-            if (self->brake_cycles_ == 0) {
-                self->dispenser_->Stop();
-                esp_timer_stop(self->poll_timer_);
-                ESP_LOGI(TAG_PBT, "制动完成, 已停止");
-            }
-            return;
-        }
-
         if (!self->is_moving_ && !self->is_homing_) {
             // 空闲状态, 但定时器仍在运行 (只在寻零关闭期间需要)
             return;
@@ -213,6 +223,7 @@ private:
             self->stopMotor();
             self->is_moving_ = false;
             self->is_homing_ = false;
+            esp_timer_stop(self->poll_timer_);
             return;
         }
 
@@ -223,17 +234,16 @@ private:
         bool sw1_trig = self->debounceSwitch(sw1_raw, self->sw1_db_);
 
         if (self->is_homing_) {
-            // 寻零: SW0 消抖确认后制动刹停
+            // 寻零: 等待 SW0
             if (sw0_trig) {
+                self->stopMotor();
                 self->current_slot_ = 0;
                 self->sw1_counter_ = 0;
                 self->is_homing_ = false;
                 self->is_moving_ = false;
                 self->ready_ = true;
-                // 制动: 反向脉冲 120μs × 4 周期 (20ms)
-                self->dispenser_->BrakePulse(120);
-                self->brake_cycles_ = 4;
-                ESP_LOGI(TAG_PBT, "寻零完成, 槽0, 制动中...");
+                esp_timer_stop(self->poll_timer_);
+                ESP_LOGI(TAG_PBT, "寻零完成, 当前位置: 槽0");
             }
             return;
         }
@@ -243,24 +253,19 @@ private:
         // 转槽或归零中
 
         if (self->target_slot_ == 0) {
-            // goHome: SW0 消抖确认后制动刹停
+            // goHome: 等待 SW0
             if (sw0_trig) {
+                self->stopMotor();
                 self->current_slot_ = 0;
                 self->sw1_counter_ = 0;
                 self->is_moving_ = false;
-                // 制动: 反向脉冲 120μs × 4 周期 (20ms)
-                self->dispenser_->BrakePulse(120);
-                self->brake_cycles_ = 4;
-                ESP_LOGI(TAG_PBT, "归零完成, 槽0, 制动中...");
+                esp_timer_stop(self->poll_timer_);
+                ESP_LOGI(TAG_PBT, "归零完成, 当前位置: 槽0");
             }
             return;
         }
 
-        // goToSlot(N): 计数 SW1, 并由 SW0 复位
-        if (sw0_trig) {
-            self->sw1_counter_ = 0;
-            ESP_LOGI(TAG_PBT, "经过槽0, 计数器清零");
-        }
+        // goToSlot(N): 仅计数 SW1, 不因经过槽0而清零
         if (sw1_trig) {
             self->sw1_counter_++;
             ESP_LOGI(TAG_PBT, "SW1触发, 计数器=%d (目标=%d)",

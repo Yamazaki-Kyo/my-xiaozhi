@@ -16,7 +16,137 @@
 #include <memory>
 #include <algorithm>
 
+#include "pillbox_turntable.h"
+
 #define TAG_MCS "MedConfig"
+
+// ===================== 转盘调试 Web 页面 =====================
+static const char TURNTABLE_DEBUG_HTML[] = R"rawliteral(
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>转盘调试</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,system-ui,sans-serif;background:#1a1a2e;color:#eee;min-height:100vh;display:flex;flex-direction:column;align-items:center;padding:16px}
+h2{font-size:1.3rem;margin-bottom:8px;color:#e0e0e0}
+.current-slot{display:flex;align-items:center;gap:12px;margin:12px 0 20px}
+.slot-badge{width:64px;height:64px;border-radius:50%;background:#16213e;border:3px solid #0f3460;display:flex;align-items:center;justify-content:center;font-size:2rem;font-weight:bold;color:#e94560;transition:all .3s}
+.slot-badge.moving{animation:pulse .5s infinite;border-color:#e94560}
+@keyframes pulse{0%,100%{box-shadow:0 0 8px #e9456040}50%{box-shadow:0 0 24px #e94560aa}}
+.status-tag{font-size:.75rem;padding:3px 10px;border-radius:10px;font-weight:600}
+.status-tag.ready{background:#0f3460;color:#53d769}
+.status-tag.busy{background:#e9456040;color:#e94560}
+.status-tag.nope{background:#333;color:#999}
+.slot-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;max-width:360px;width:100%;margin-bottom:16px}
+.slot-btn{aspect-ratio:1;border-radius:16px;border:2px solid #0f3460;background:#16213e;color:#ccc;font-size:1.1rem;font-weight:600;cursor:pointer;transition:all .15s;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;-webkit-tap-highlight-color:transparent}
+.slot-btn:active{transform:scale(.94);background:#e94560;border-color:#e94560;color:#fff}
+.slot-btn.active{border-color:#53d769;background:#53d76920;color:#53d769}
+.slot-btn small{font-size:.65rem;opacity:.6}
+.home-btn{width:100%;max-width:360px;padding:14px;border-radius:12px;border:none;background:#e94560;color:#fff;font-size:1rem;font-weight:700;cursor:pointer;margin-bottom:20px;transition:all .15s}
+.home-btn:active{transform:scale(.96);opacity:.8}
+.home-btn:disabled{background:#444;color:#888;cursor:not-allowed}
+.info-row{display:flex;justify-content:space-between;max-width:360px;width:100%;font-size:.75rem;color:#888;padding:0 4px}
+</style>
+</head>
+<body>
+<h2>药盘转盘调试</h2>
+<div class="current-slot">
+  <div class="slot-badge" id="slotDisplay">-</div>
+  <div>
+    <div style="font-size:.85rem;margin-bottom:4px">当前槽位</div>
+    <span class="status-tag nope" id="statusTag">未就绪</span>
+  </div>
+</div>
+<div class="slot-grid" id="slotGrid"></div>
+<button class="home-btn" id="homeBtn" onclick="goHome()">归零 (槽0)</button>
+<div class="info-row"><span id="movingHint"></span><span id="updateTime"></span></div>
+<div id="errorMsg" style="display:none;max-width:360px;width:100%;margin-top:8px;padding:10px 14px;border-radius:8px;background:#e9456040;color:#e94560;font-size:.85rem;text-align:center"></div>
+
+<script>
+var currentSlot = -1;
+var isMoving = false;
+var isReady = false;
+
+function showError(msg){
+  var e=document.getElementById('errorMsg');
+  e.textContent=msg;e.style.display='block';
+  clearTimeout(e._t);e._t=setTimeout(function(){e.style.display='none';},3000);
+}
+
+function buildGrid(){
+  var g=document.getElementById('slotGrid');
+  g.innerHTML='';
+  for(var i=1;i<=7;i++){
+    var b=document.createElement('button');
+    b.className='slot-btn';
+    b.innerHTML=i+'<small>槽</small>';
+    b.onclick=(function(s){return function(){goToSlot(s);};})(i);
+    b.id='btn'+i;
+    g.appendChild(b);
+  }
+}
+
+function updateUI(){
+  var badge=document.getElementById('slotDisplay');
+  badge.textContent=isReady?currentSlot:'-';
+  badge.className='slot-badge'+(isMoving?' moving':'');
+
+  var tag=document.getElementById('statusTag');
+  if(!isReady){tag.textContent='未就绪';tag.className='status-tag nope';}
+  else if(isMoving){tag.textContent='转动中...';tag.className='status-tag busy';}
+  else{tag.textContent='就绪';tag.className='status-tag ready';}
+
+  for(var i=1;i<=7;i++){
+    var b=document.getElementById('btn'+i);
+    if(b)b.classList.toggle('active',isReady&&!isMoving&&currentSlot===i);
+  }
+
+  document.getElementById('homeBtn').disabled=!isReady||isMoving||currentSlot===0;
+  document.getElementById('movingHint').textContent=isMoving?'转盘正在旋转...':(isReady?'点击按钮旋转到指定槽位':'等待转盘就绪');
+  document.getElementById('updateTime').textContent=new Date().toLocaleTimeString();
+}
+
+function fetchStatus(){
+  fetch('/api/turntable/status')
+    .then(function(r){return r.json();})
+    .then(function(d){
+      currentSlot=d.slot;isReady=d.ready;
+      if(isReady && !isNaN(d.slot) && d.slot>=0) isMoving=false;
+      updateUI();
+    })
+    .catch(function(e){showError('无法连接设备');});
+}
+
+function goToSlot(n){
+  fetch('/api/turntable/go',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({slot:n})})
+    .then(function(r){return r.json();})
+    .then(function(d){
+      if(d.ok){currentSlot=-1;isMoving=true;updateUI();}
+      else{showError(d.error||'请求失败');}
+    })
+    .catch(function(e){showError('请求失败,请检查连接');});
+}
+
+function goHome(){
+  fetch('/api/turntable/home',{method:'POST'})
+    .then(function(r){return r.json();})
+    .then(function(d){
+      if(d.ok){currentSlot=-1;isMoving=true;updateUI();}
+      else{showError(d.error||'归零失败');}
+    })
+    .catch(function(e){showError('请求失败,请检查连接');});
+}
+
+buildGrid();
+fetchStatus();
+setInterval(fetchStatus,500);
+</script>
+</body>
+</html>
+)rawliteral";
 
 static const char MEDICINE_CONFIG_HTML[] = R"rawliteral(
 <!DOCTYPE html>
@@ -1321,6 +1451,8 @@ public:
         on_event_fired_ = std::move(cb);
     }
 
+    void SetTurntable(PillBoxTurntable* t) { turntable_ = t; }
+
     /// @brief 检查当前时间是否匹配用药计划，匹配时触发回调。返回提醒消息（空串=无提醒）。
     std::string CheckAndNotify() {
         if (!plan_.master_enabled) return {};
@@ -1456,6 +1588,7 @@ private:
     int last_fired_ = -1;
     std::map<std::string, std::vector<CalendarEvent>> calendar_;
     std::function<void(int slot, int dose, const char* msg)> on_event_fired_;
+    PillBoxTurntable* turntable_ = nullptr;
 
     static constexpr const char* NVS_NS = "medplan";
     static constexpr const char* NVS_KEY = "plan";
@@ -1652,7 +1785,11 @@ private:
             return (*h)(req);
         };
         uri_cfg.user_ctx = ctx;
-        httpd_register_uri_handler(server_, &uri_cfg);
+        esp_err_t err = httpd_register_uri_handler(server_, &uri_cfg);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG_MCS, "注册 %s %s 失败 (err=%d)", method == HTTP_GET ? "GET" : "POST", uri, err);
+            delete ctx;
+        }
     }
 
     void RegisterHandlers() {
@@ -1930,6 +2067,90 @@ private:
                 httpd_resp_send(req, js, HTTPD_RESP_USE_STRLEN);
                 cJSON_free(js);
                 cJSON_Delete(resp);
+                return ESP_OK;
+            });
+
+        // ===== 转盘调试 API =====
+
+        // GET /turntable-debug → 调试页面
+        RegisterUri("/turntable-debug", HTTP_GET,
+            [](httpd_req_t* req) {
+                httpd_resp_set_type(req, "text/html; charset=utf-8");
+                httpd_resp_set_hdr(req, "Cache-Control", "no-cache, no-store, must-revalidate");
+                httpd_resp_send(req, TURNTABLE_DEBUG_HTML, HTTPD_RESP_USE_STRLEN);
+                return ESP_OK;
+            });
+
+        // GET /api/turntable/status → 当前状态
+        RegisterUri("/api/turntable/status", HTTP_GET,
+            [this](httpd_req_t* req) {
+                cJSON* r = cJSON_CreateObject();
+                if (turntable_) {
+                    cJSON_AddNumberToObject(r, "slot", turntable_->getCurrentSlot());
+                    cJSON_AddBoolToObject(r, "ready", turntable_->isReady());
+                } else {
+                    cJSON_AddNumberToObject(r, "slot", -1);
+                    cJSON_AddBoolToObject(r, "ready", false);
+                }
+                char* js = cJSON_PrintUnformatted(r);
+                httpd_resp_set_type(req, "application/json");
+                httpd_resp_send(req, js, HTTPD_RESP_USE_STRLEN);
+                cJSON_free(js);
+                cJSON_Delete(r);
+                return ESP_OK;
+            });
+
+        // POST /api/turntable/go → 转到指定槽 {slot:N}
+        RegisterUri("/api/turntable/go", HTTP_POST,
+            [this](httpd_req_t* req) {
+                char buf[128] = {};
+                httpd_req_recv(req, buf, sizeof(buf) - 1);
+                cJSON* root = cJSON_Parse(buf);
+                cJSON* r = cJSON_CreateObject();
+                if (root) {
+                    cJSON* slot_j = cJSON_GetObjectItem(root, "slot");
+                    if (cJSON_IsNumber(slot_j)) {
+                        int slot = slot_j->valueint;
+                        if (turntable_ && turntable_->isReady()) {
+                            turntable_->goToSlot(slot);
+                            cJSON_AddBoolToObject(r, "ok", true);
+                            ESP_LOGI(TAG_MCS, "调试: 转至槽%d", slot);
+                        } else {
+                            cJSON_AddBoolToObject(r, "ok", false);
+                            cJSON_AddStringToObject(r, "error", "转盘未就绪");
+                        }
+                    }
+                    cJSON_Delete(root);
+                }
+                if (!cJSON_HasObjectItem(r, "ok")) {
+                    cJSON_AddBoolToObject(r, "ok", false);
+                    cJSON_AddStringToObject(r, "error", "无效请求");
+                }
+                char* js = cJSON_PrintUnformatted(r);
+                httpd_resp_set_type(req, "application/json");
+                httpd_resp_send(req, js, HTTPD_RESP_USE_STRLEN);
+                cJSON_free(js);
+                cJSON_Delete(r);
+                return ESP_OK;
+            });
+
+        // POST /api/turntable/home → 归零
+        RegisterUri("/api/turntable/home", HTTP_POST,
+            [this](httpd_req_t* req) {
+                cJSON* r = cJSON_CreateObject();
+                if (turntable_ && turntable_->isReady()) {
+                    turntable_->goHome();
+                    cJSON_AddBoolToObject(r, "ok", true);
+                    ESP_LOGI(TAG_MCS, "调试: 归零");
+                } else {
+                    cJSON_AddBoolToObject(r, "ok", false);
+                    cJSON_AddStringToObject(r, "error", "转盘未就绪");
+                }
+                char* js = cJSON_PrintUnformatted(r);
+                httpd_resp_set_type(req, "application/json");
+                httpd_resp_send(req, js, HTTPD_RESP_USE_STRLEN);
+                cJSON_free(js);
+                cJSON_Delete(r);
                 return ESP_OK;
             });
     }

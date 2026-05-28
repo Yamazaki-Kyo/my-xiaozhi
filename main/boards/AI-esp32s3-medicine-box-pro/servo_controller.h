@@ -31,12 +31,10 @@ public:
         ESP_ERROR_CHECK(ledc_channel_config(&ch_cfg));
 
         gpio_config_t home_cfg = {};
-        if (home_switch_pin_ != GPIO_NUM_NC) {
-            home_cfg.pin_bit_mask = (1ULL << home_switch_pin_);
-            home_cfg.mode = GPIO_MODE_INPUT;
-            home_cfg.pull_up_en = GPIO_PULLUP_ENABLE;
-            ESP_ERROR_CHECK(gpio_config(&home_cfg));
-        }
+        home_cfg.pin_bit_mask = (1ULL << home_switch_pin_);
+        home_cfg.mode = GPIO_MODE_INPUT;
+        home_cfg.pull_up_en = GPIO_PULLUP_ENABLE;
+        ESP_ERROR_CHECK(gpio_config(&home_cfg));
 
         ESP_LOGI(TAG_SERVO, "360°舵机调试模式 (PWM: GPIO%d, 开关: GPIO%d)",
                  pwm_pin_, home_switch_pin_);
@@ -91,17 +89,6 @@ public:
         ESP_LOGI(TAG_SERVO, "停止 (PWM=%luμs)", current_pulse_);
     }
 
-    /// @brief 发送制动脉冲 (反向短脉冲刹停, 不更新 moving_ 状态)
-    /// @param reverse_dev 反向偏差 (正值, 自动取反方向)
-    void BrakePulse(int reverse_dev) {
-        if (reverse_dev < 0) reverse_dev = -reverse_dev;
-        if (reverse_dev > MAX_DEV) reverse_dev = MAX_DEV;
-        int brake_pulse = (int)EffectiveCenter() - reverse_dev;
-        if (brake_pulse < (int)STOP_US - MAX_DEV) brake_pulse = (int)STOP_US - MAX_DEV;
-        SetPwm((uint32_t)brake_pulse);
-        ESP_LOGI(TAG_SERVO, "制动: %dμs (PWM=%dμs)", -reverse_dev, brake_pulse);
-    }
-
     void RotatePulse(int delta) {
         int pulse = (int)current_pulse_ + delta;
         int lo = (int)STOP_US - MAX_DEV;
@@ -151,7 +138,7 @@ public:
     uint32_t GetPulse()        const { return current_pulse_; }
     int      GetDeviation()    const { return (int)current_pulse_ - (int)EffectiveCenter(); }
     bool     IsMoving()        const { return moving_; }
-    bool     IsHomeTriggered() const { return home_switch_pin_ != GPIO_NUM_NC && gpio_get_level(home_switch_pin_) == 0; }
+    bool     IsHomeTriggered() const { return gpio_get_level(home_switch_pin_) == 0; }
 
     static constexpr uint32_t STOP_US = 1500;
     static constexpr int      MAX_DEV = 300;
