@@ -111,6 +111,9 @@ private:
     bool health_measuring_ = false;
     int health_elapsed_sec_ = 0;
     bool reminder_active_ = false;
+    int  reminder_slot_ = 0;
+    int  reminder_dose_ = 0;
+    std::string reminder_msg_;
 
     static constexpr int PPG_RING_SIZE = 600;
     struct PpgRingEntry {
@@ -483,6 +486,30 @@ private:
             // 舵机归零：仅在用药提醒激活时归零，避免双击检测时误触
             if (turntable_ && turntable_->isReady() && reminder_active_) {
                 turntable_->goHome();
+                // 微信推送用药确认信息
+                time_t now = time(NULL);
+                struct tm tm_now;
+                localtime_r(&now, &tm_now);
+                char time_str[64];
+                snprintf(time_str, sizeof(time_str),
+                         "%04d-%02d-%02d %02d:%02d",
+                         tm_now.tm_year + 1900, tm_now.tm_mon + 1, tm_now.tm_mday,
+                         tm_now.tm_hour, tm_now.tm_min);
+                char push_summary[128];
+                snprintf(push_summary, sizeof(push_summary),
+                         "用药确认 - 槽%d", reminder_slot_);
+                char push_content[256];
+                snprintf(push_content, sizeof(push_content),
+                         "## 用药确认\n\n"
+                         "**药物**: %s\n\n"
+                         "**槽位**: %d\n\n"
+                         "**剂量**: %d 颗\n\n"
+                         "**时间**: %s\n\n"
+                         "状态: 已服用 ✅",
+                         reminder_msg_.c_str(), reminder_slot_,
+                         reminder_dose_, time_str);
+                notifier_.SendMarkdown(push_summary, push_content);
+                ESP_LOGI(TAG, "用药信息已推送微信 (槽%d)", reminder_slot_);
                 reminder_active_ = false;
             }
             ESP_LOGI(TAG, "用药提醒已确认 (GPIO10 按钮)");
@@ -546,6 +573,9 @@ public:
         // 用药提醒回调：到点时屏幕通知 + 大字剂量 + OGG 语音循环播报
         medicine_config_server_->SetEventCallback([this](int slot, int dose, const char* msg) {
             reminder_active_ = true;
+            reminder_slot_ = slot;
+            reminder_dose_ = dose;
+            reminder_msg_ = msg;
             // 舵机转至目标药槽 (必须在 ESP_TIMER_TASK 中立即执行, 不能 defer)
             if (turntable_ && turntable_->isReady()) {
                 turntable_->goToSlot(slot);
