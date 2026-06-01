@@ -26,7 +26,23 @@
       "Bash(cmd.exe /c C:\\\\Windows\\\\Temp\\\\build3.bat)",
       "Bash(cmd.exe /c C:\\\\Windows\\\\Temp\\\\build_now.bat)",
       "Read(//c/esp/v5.5.4/esp-idf/**)",
-      "WebSearch"
+      "WebSearch",
+      "Bash(env -u MSYSTEM -u SHELL -u MSYSCON -u TERM -u MSYS -u MINGW_PREFIX -u MSYSTEM_PREFIX cmd.exe //c \"powershell -Command \\\\\"Get-WMIObject Win32_SerialPort | Select-Object DeviceID, Description\\\\\"\")",
+      "Bash(env -u MSYSTEM -u SHELL -u MSYSCON -u TERM -u MSYS -u MINGW_PREFIX -u MSYSTEM_PREFIX cmd.exe //c \"C:\\\\Users\\\\Administrator\\\\Documents\\\\ESP-32-project\\\\xiaozhi-esp32\\\\flash_esp.bat\")",
+      "Bash(xxd)",
+      "Bash(python3)",
+      "Read(//c/Users/Administrator/Desktop/**)",
+      "Read(//c/Users/Administrator/Documents/ESP-32-project/**)",
+      "Read(//c/esp/**)",
+      "Read(//c//**)",
+      "Bash(export IDF_PATH=\"C:/esp-idf/v5.5.4\")",
+      "Bash(export PATH=\"C:/Users/Administrator/.espressif/tools/xtensa-esp-elf/14.2.0_20260121/xtensa-esp-elf/bin:C:/Users/Administrator/.espressif/tools/xtensa-esp32s3-elf/esp-14.2.0_20241119/xtensa-esp32s3-elf/bin:C:/Users/Administrator/.espressif/tools/riscv32-esp-elf/14.2.0_20260121/riscv32-esp-elf/bin:C:/Users/Administrator/.espressif/python_env/idf5.5_py3.13_env/Scripts:C:/Users/Administrator/.espressif/tools/esp-rom-elfs/20240305/esp-rom-elfs:$PATH\")",
+      "Bash(MSYSTEM= SHELL= TERM= cmd.exe //c \"cd /d C:\\\\Users\\\\Administrator\\\\Documents\\\\ESP-32-project\\\\xiaozhi-esp32 && C:\\\\Users\\\\Administrator\\\\.espressif\\\\python_env\\\\idf5.5_py3.13_env\\\\Scripts\\\\python.exe C:\\\\esp-idf\\\\v5.5.4\\\\tools\\\\idf.py build 2>&1\")",
+      "Bash(idf.py build *)",
+      "Bash(ls \"$HOME/esp\" 2>/dev/null && echo \"found ~/esp\" || find /c/Users/Administrator -maxdepth 3 -name \"idf.py\" -type f 2>/dev/null | head -5)",
+      "Read(//c/Users/Administrator/**)",
+      "Bash(cmd /c \"cd /d C:\\\\Users\\\\Administrator\\\\Documents\\\\ESP-32-project\\\\xiaozhi-esp32 && call C:\\\\esp\\\\v5.5.4\\\\esp-idf\\\\export.bat > nul && idf.py build 2>&1\")",
+      "Bash(powershell.exe -Command \"& 'C:\\\\esp\\\\v5.5.4\\\\esp-idf\\\\export.ps1'; cd 'C:\\\\Users\\\\Administrator\\\\Documents\\\\ESP-32-project\\\\xiaozhi-esp32'; idf.py build 2>&1 | Select-Object -Last 80\")"
     ]
   }
 }
