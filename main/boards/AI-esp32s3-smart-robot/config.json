@@ -1,0 +1,11 @@
+{
+    "target": "esp32s3",
+    "builds": [
+        {
+            "name": "AI-esp32s3-smart-robot",
+            "sdkconfig_append": [
+                "LCD_ST7789_240X320=y"
+            ]
+        }
+    ]
+}
