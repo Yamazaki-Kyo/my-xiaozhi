@@ -16,8 +16,12 @@
 #include <esp_lcd_panel_ops.h>
 #include <driver/spi_common.h>
 #include <driver/ledc.h>
+#include <driver/uart.h>
 #include <cmath>
 #include <memory>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
+#include <freertos/queue.h>
 
 #if defined(LCD_TYPE_ILI9341_SERIAL)
 #include "esp_lcd_ili9341.h"
@@ -118,6 +122,9 @@ public:
         current_duty_ = duty;
         current_dir_ = dir;
 
+        ESP_LOGI(TAG, "Motor GPIO%d/%d dir=%d speed=%d duty=%d ch=%d/%d",
+                 in1_pin_, in2_pin_, dir, speed, duty, ch_in1_, ch_in2_);
+
         if (dir == 1) {
             // 正转: IN1=PWM, IN2=0
             ESP_ERROR_CHECK(ledc_set_duty(LEDC_LOW_SPEED_MODE, ch_in1_, duty));
@@ -213,6 +220,69 @@ private:
     // 舵机（最多2路）
     ServoController servo_[2];
     int servo_count_;
+
+    // 自动停止定时器
+    esp_timer_handle_t auto_stop_timer_;
+    static constexpr uint32_t AUTO_STOP_MS = 2500;
+
+    // 串口控制
+    TaskHandle_t serial_task_handle_;
+
+    static void AutoStopCallback(void* arg) {
+        auto* self = static_cast<SmartRobotBoard*>(arg);
+        self->motor_a_->Stop();
+        self->motor_b_->Stop();
+        ESP_LOGI(TAG, "⏱ 自动停止");
+    }
+
+    void StartAutoStopTimer() {
+        if (esp_timer_is_active(auto_stop_timer_)) {
+            esp_timer_stop(auto_stop_timer_);
+        }
+        esp_timer_start_once(auto_stop_timer_, AUTO_STOP_MS * 1000);
+    }
+
+    // 串口命令处理任务
+    static void SerialTask(void* arg) {
+        auto* self = static_cast<SmartRobotBoard*>(arg);
+        uint8_t buf[64];
+        while (true) {
+            int len = uart_read_bytes(UART_NUM_1, buf, sizeof(buf) - 1, pdMS_TO_TICKS(200));
+            if (len > 0) {
+                ESP_LOGI(TAG, "串口触发 (len=%d)", len);
+                auto& app = Application::GetInstance();
+                app.Schedule([&app]() {
+                    auto state = app.GetDeviceState();
+                    if (state == kDeviceStateIdle) {
+                        // 唤醒 → 触发语音打招呼
+                        app.WakeWordInvoke("你好小智");
+                    } else if (state == kDeviceStateSpeaking ||
+                               state == kDeviceStateListening) {
+                        // 打断说话/听音
+                        app.AbortSpeaking(kAbortReasonNone);
+                    }
+                });
+            }
+        }
+    }
+
+    void InitializeSerialControl() {
+        // UART1: RX=IO39, TX=IO38（外部设备唤醒/打断）
+        uart_config_t uart_config = {};
+        uart_config.baud_rate = 115200;
+        uart_config.data_bits = UART_DATA_8_BITS;
+        uart_config.parity = UART_PARITY_DISABLE;
+        uart_config.stop_bits = UART_STOP_BITS_1;
+        uart_config.flow_ctrl = UART_HW_FLOWCTRL_DISABLE;
+        uart_config.source_clk = UART_SCLK_DEFAULT;
+        ESP_ERROR_CHECK(uart_driver_install(UART_NUM_1, 256, 0, 0, NULL, 0));
+        ESP_ERROR_CHECK(uart_param_config(UART_NUM_1, &uart_config));
+        ESP_ERROR_CHECK(uart_set_pin(UART_NUM_1, GPIO_NUM_38, GPIO_NUM_39,
+                                     UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE));
+
+        xTaskCreate(SerialTask, "serial_ctrl", 3072, this, 5, &serial_task_handle_);
+        ESP_LOGI(TAG, "串口控制已启动 (UART1 RX=IO39 TX=IO38)");
+    }
 
     // ---- 舵机初始化（独立 Timer2 + CH4~5） ----
     void InitializeServos() {
@@ -332,54 +402,59 @@ private:
         auto& mcp = McpServer::GetInstance();
 
         // ========== 电机：移动 ==========
+        // 硬件限制：两电机必须同向才能正常输出电压
         mcp.AddTool(
             "self.motor.forward",
-            "小车向前行驶（双轮同向正转）。适用指令：前进、往前走、向前移动、直行、冲。"
-            "speed: 速度百分比 0-100，默认 50",
-            PropertyList({Property("speed", kPropertyTypeInteger, 50, 0, 100)}),
+            "小车向前直线行驶。适用指令：前进、往前走、向前移动、直行、冲。"
+            "speed: 速度百分比 0-100，默认 100",
+            PropertyList({Property("speed", kPropertyTypeInteger, 100, 0, 100)}),
             [this](const PropertyList& props) -> ReturnValue {
                 int speed = props["speed"].value<int>();
                 motor_a_->Run(speed, 1);
                 motor_b_->Run(speed, 1);
+                StartAutoStopTimer();
                 ESP_LOGI(TAG, "MCP forward speed=%d", speed);
                 return true;
             });
 
         mcp.AddTool(
             "self.motor.backward",
-            "小车向后行驶（双轮同向反转）。适用指令：后退、往后退、倒车、向后移动。"
-            "speed: 速度百分比 0-100，默认 50",
-            PropertyList({Property("speed", kPropertyTypeInteger, 50, 0, 100)}),
+            "小车向后直线行驶。适用指令：后退、往后退、倒车、向后移动。"
+            "speed: 速度百分比 0-100，默认 100",
+            PropertyList({Property("speed", kPropertyTypeInteger, 100, 0, 100)}),
             [this](const PropertyList& props) -> ReturnValue {
                 int speed = props["speed"].value<int>();
                 motor_a_->Run(speed, -1);
                 motor_b_->Run(speed, -1);
+                StartAutoStopTimer();
                 ESP_LOGI(TAG, "MCP backward speed=%d", speed);
                 return true;
             });
 
         mcp.AddTool(
             "self.motor.turn_left",
-            "原地左转（左轮反转，右轮正转）。适用指令：左转、向左转、往左拐、转左边。"
-            "speed: 速度百分比 0-100，默认 50",
-            PropertyList({Property("speed", kPropertyTypeInteger, 50, 0, 100)}),
+            "小车原地左转。适用指令：左转、向左转、往左拐、转左边。"
+            "speed: 速度百分比 0-100，默认 100",
+            PropertyList({Property("speed", kPropertyTypeInteger, 100, 0, 100)}),
             [this](const PropertyList& props) -> ReturnValue {
                 int speed = props["speed"].value<int>();
-                motor_a_->Run(speed, -1);
-                motor_b_->Run(speed, 1);
+                motor_a_->Run(speed, 1);
+                motor_b_->Run(speed * 2 / 3, 1);
+                StartAutoStopTimer();
                 ESP_LOGI(TAG, "MCP turn_left speed=%d", speed);
                 return true;
             });
 
         mcp.AddTool(
             "self.motor.turn_right",
-            "原地右转（左轮正转，右轮反转）。适用指令：右转、向右转、往右拐、转右边。"
-            "speed: 速度百分比 0-100，默认 50",
-            PropertyList({Property("speed", kPropertyTypeInteger, 50, 0, 100)}),
+            "小车原地右转。适用指令：右转、向右转、往右拐、转右边。"
+            "speed: 速度百分比 0-100，默认 100",
+            PropertyList({Property("speed", kPropertyTypeInteger, 100, 0, 100)}),
             [this](const PropertyList& props) -> ReturnValue {
                 int speed = props["speed"].value<int>();
-                motor_a_->Run(speed, 1);
-                motor_b_->Run(speed, -1);
+                motor_a_->Run(speed * 2 / 3, 1);
+                motor_b_->Run(speed, 1);
+                StartAutoStopTimer();
                 ESP_LOGI(TAG, "MCP turn_right speed=%d", speed);
                 return true;
             });
@@ -454,6 +529,13 @@ public:
         : boot_button_(BOOT_BUTTON_GPIO),
           servo_count_(0)
     {
+        // 创建自动停止定时器（2.5秒）
+        esp_timer_create_args_t timer_args = {};
+        timer_args.callback = AutoStopCallback;
+        timer_args.arg = this;
+        timer_args.name = "auto_stop";
+        ESP_ERROR_CHECK(esp_timer_create(&timer_args, &auto_stop_timer_));
+
         InitializeSpi();
         InitializeLcdDisplay();
         InitializeButtons();
@@ -461,10 +543,18 @@ public:
         InitializeMotors();
         InitializeTools();
         RegisterMcpTools();
+        InitializeSerialControl();
         if (DISPLAY_BACKLIGHT_PIN != GPIO_NUM_NC) {
             GetBacklight()->RestoreBrightness();
         }
         ESP_LOGI(TAG, "AI瓦力机器人初始化完成");
+    }
+
+    ~SmartRobotBoard() {
+        if (auto_stop_timer_) {
+            esp_timer_stop(auto_stop_timer_);
+            esp_timer_delete(auto_stop_timer_);
+        }
     }
 
     virtual Led* GetLed() override {
